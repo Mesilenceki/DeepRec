@@ -27,7 +27,6 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/graph_optimizer.h"
 #include "tensorflow/core/common_runtime/metrics.h"
-#include "tensorflow/core/common_runtime/optimization_registry.h"
 #include "tensorflow/core/common_runtime/placer.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/function.h"
@@ -54,6 +53,7 @@ limitations under the License.
 #include "tensorflow/core/util/device_name_utils.h"
 #include "tensorflow/core/util/env_var.h"
 #include "tensorflow/core/util/util.h"
+#include "tensorflow/core/util/dump_graph.h"
 
 #ifndef IS_MOBILE_PLATFORM
 #include "tensorflow/core/grappler/clusters/virtual_cluster.h"
@@ -812,10 +812,11 @@ Status GraphExecutionState::PipelineGraph(std::unique_ptr<Graph>* g,
 
 Status GraphExecutionState::SmartStageGraph(std::unique_ptr<Graph>* g,
                                             const std::vector<std::string>& target_nodes,
-                                            const bool do_smart_stage_gpu) {
+                                            const GraphOptimizationPassOptions& options,
+                                            bool do_smart_stage_gpu) {
     VLOG(2) << "GraphExecutionState::SmartStageGraph";
     Graph* graph = g->get();
-
+    DumpGraphToFile("pre_smart_stage", *graph, options.flib_def);
     std::unique_ptr<Graph> staged_graph(new Graph(OpRegistry::Global()));
     CopyGraph(*graph, staged_graph.get());
     std::map<std::string, Node*> stage_node_map;
@@ -843,6 +844,7 @@ Status GraphExecutionState::SmartStageGraph(std::unique_ptr<Graph>* g,
     std::map<std::string, Node*>::iterator it;
     for (it = stage_node_map.begin(); it != stage_node_map.end(); ++it) {
       if (unstage_node_map.find(it->first) != unstage_node_map.end()) {
+        std::cout << "staged_node is: " << it->first << " " << it->second->type_string() << std::endl;
         StageGraph(staged_graph.get(), it->second, unstage_node_map[it->first], 
                    target_nodes, do_smart_stage_gpu, cpu_device_name);
       }
@@ -858,7 +860,9 @@ Status GraphExecutionState::SmartStageGraph(std::unique_ptr<Graph>* g,
         }
       }
     }
+    DumpGraphToFile("post_smart_stage", *staged_graph.get(), options.flib_def);
     g->swap(staged_graph);
+    
     return Status::OK();
 }
 
@@ -962,7 +966,7 @@ Status GraphExecutionState::InitBaseGraph(std::unique_ptr<Graph>&& new_graph) {
       for (std::string s : str_util::Split(tn, ';')) {
         target_nodes.push_back(s.substr(0, s.find_last_of(':')));
       }
-      SmartStageGraph(&new_graph, target_nodes,
+      SmartStageGraph(&new_graph, target_nodes, optimization_options,
           session_optimizer_options.do_smart_stage_gpu());
     }
   }

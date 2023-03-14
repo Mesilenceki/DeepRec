@@ -1778,7 +1778,7 @@ def group_embedding_lookup_sparse(params,
         output_index = output_index_list[group_id]
         with ops.name_scope(name, "localized_group_embedding_lookup_ev_dim{}".format(dim),
                             params + sp_ids) as name_scope:
-          outputs = group_embedding_lookup.multi_kv_resource_gather(ev_handlers[group_id],
+          outputs = group_embedding_lookup.group_embedding_var_lookup(ev_handlers[group_id],
                                                                     ev_sp_values[group_id],
                                                                     ev_sp_indices[group_id],
                                                                     ev_sp_dense_shape[group_id],
@@ -1818,7 +1818,7 @@ def group_embedding_lookup_sparse(params,
         output_index = output_index_list[group_id]
         with ops.name_scope(name, "localized_group_embedding_lookup_variable_dim{}".format(dim),
                             params + sp_ids) as name_scope:
-          outputs = group_embedding_lookup.multi_embedding_sparse_look_up(tf_handlers[group_id],
+          outputs = group_embedding_lookup.group_variable_lookup(tf_handlers[group_id],
                                                                                 tf_sp_values[group_id],
                                                                                 tf_sp_indices[group_id],
                                                                                 tf_sp_dense_shape[group_id],

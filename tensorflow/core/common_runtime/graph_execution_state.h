@@ -22,6 +22,7 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/core/common_runtime/build_graph_options.h"
+#include "tensorflow/core/common_runtime/optimization_registry.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_set.h"
 #include "tensorflow/core/framework/function.h"
@@ -183,7 +184,8 @@ class GraphExecutionState {
   // SmartStage Graph for Runtime
   Status SmartStageGraph(std::unique_ptr<Graph>* graph,
                          const std::vector<std::string>& target_nodes,
-                         const bool do_smart_stage_gpu);
+                         const GraphOptimizationPassOptions& options,
+                         bool do_smart_stage_gpu);
 
   Status OptimizeGraph(
       const BuildGraphOptions& options, std::unique_ptr<Graph>* optimized_graph,

@@ -354,7 +354,7 @@ Produces an output tensor with shape `indices.shape + params.shape[1:]` where:
 
 )doc");
 
-REGISTER_OP("MultiKvResourceGather")
+REGISTER_OP("GroupEmbeddingVarLookup")
     .Input("resource: num_lookups * resource")
     .Input("sp_values: num_lookups * Tkeys")
     .Input("sp_indices: num_lookups * int64")
@@ -432,11 +432,12 @@ REGISTER_OP("MultiKvResourceGatherGrad")
       return Status::OK();
     });
 
-REGISTER_OP("MultiEmbeddingSparseLookUp")
+REGISTER_OP("GroupVariableLookup")
     .Input("emb_variables: num_lookups * dtype")
     .Input("sp_values: num_lookups * Tkeys")
     .Input("sp_indices: num_lookups * int64")
     .Input("dense_shape: num_lookups * int64")
+    .Input("default_value: dtype")
     .Output("output: num_lookups * dtype")
     .Output("sp_values_offset: num_lookups * int32")
     .Attr("combiner: {'sqrtn', 'mean', 'sum'}")
@@ -445,6 +446,7 @@ REGISTER_OP("MultiEmbeddingSparseLookUp")
     .Attr("Tkeys: {int64, int32}")
     .Attr("max_norm: float = -1.0")
     .Attr("num_lookups: int >= 1")
+    .Attr("is_use_default_value_tensor: bool = false")
     .SetShapeFn([](InferenceContext* ctx) {
       int num_lookups = ctx->num_outputs() / 2;
       for (int i = 0; i < num_lookups; ++i) {

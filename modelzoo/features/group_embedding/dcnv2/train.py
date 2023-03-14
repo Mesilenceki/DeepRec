@@ -227,12 +227,11 @@ def transform_feature_column():
                 ev_option = ev_opt
             )
             
-            with tf.device("/gpu:0"):
-                weight = tf.feature_column.embedding_column(
+            weight = tf.feature_column.embedding_column(
                     categorical_column=column,
                     dimension=EMBEDDING_DIMENSIONS[column_name],
                     initializer=tf.ones_initializer(tf.float32),
-                )
+            )
 
             feature_columns.append(weight)
 
@@ -293,7 +292,7 @@ def transform_categorical(feature):
 
         i = CATEGORICAL_COLUMNS.index(column_name)
 
-        target_gpu = i % hvd.size()
+        #target_gpu = i % hvd.size()
 
         target_gpu = -1
 
@@ -479,7 +478,7 @@ def main():
 
     assert args.batch_size % hvd.size() == 0
 
-    batch_size = int(args.batch_size / hvd.size())
+    batch_size = int(args.batch_size/ hvd.size())
 
     if args.steps == 0:
 
@@ -553,7 +552,7 @@ def main():
 
     sess_config = tf.ConfigProto()
 
-    sess_config.gpu_options.visible_device_list = str(hvd.local_rank())
+    sess_config.gpu_options.visible_device_list = str(hvd.rank())
 
     sess_config.gpu_options.allow_growth = True
 
@@ -600,7 +599,7 @@ def main():
 
     with tf.train.MonitoredTrainingSession(master = '',
                                            hooks=hooks,
-                                           checkpoint_dir=checkpoint_dir,
+                                           checkpoint_dir='',
                                            scaffold=scaffold,
                                            config=sess_config) as sess:
 

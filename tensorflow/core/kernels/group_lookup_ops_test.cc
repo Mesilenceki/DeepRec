@@ -119,7 +119,7 @@ class GroupEmbeddingForWardOpTest : public OpsTestBase {
     get_node_attr_from_test_case<test_case>(combiner_str, max_norm);
 
     TF_EXPECT_OK(NodeDefBuilder("multi_embedding_sparse_look_up",
-                                "MultiEmbeddingSparseLookUp")
+                                "GroupVariableLookup")
                      .Input(FakeInput(num_lookups, v_dtype))
                      .Input(FakeInput(num_lookups, k_dtype))
                      .Input(FakeInput(num_lookups, DT_INT64))

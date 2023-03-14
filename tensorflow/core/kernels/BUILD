@@ -5353,6 +5353,8 @@ tf_kernel_library(
                 "group_lookup_backward.cu.cc",],
     deps = ["//third_party/eigen3",
             "//tensorflow/core/kernels:gpu_device_array",
+            "//tensorflow/core:core",
+            ":gpu_utils",
             ":training_op_helpers",
             ":variable_ops",
             "//tensorflow/core:embedding_gpu",
@@ -5360,6 +5362,7 @@ tf_kernel_library(
             "@libcuckoo//:libcuckoo",
             "@com_github_google_leveldb//:leveldb",] + DYNAMIC_DEPS + mkl_deps() +
            if_cuda(["@cub_archive//:cub",
+                    "//tensorflow/stream_executor/cuda:cuda_stream",
                     ":fused_embedding_common_cuh",
                     "@cuCollections//:cuco_hash_table"]),
 )

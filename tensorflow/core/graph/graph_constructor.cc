@@ -1897,7 +1897,13 @@ void StageGraph(Graph* dest, Node* stage_node, Node* unstage_node,
   }
 
   std::vector<const Edge*> in_edges;
+  std::vector<const Edge*> backward_edges;
   for (auto* e : stage_node->in_edges()) {
+    // if (e.src().name().find("head") != std::string::npos) {
+    //   backward_edges.push_back(e);
+    // } else {
+    //   in_edges.push_back(e);
+    // }
     in_edges.push_back(e);
   }
 
@@ -1932,6 +1938,7 @@ void StageGraph(Graph* dest, Node* stage_node, Node* unstage_node,
   }
 
   // place stage node and unstage node on CPU device
+  std::cout << "device name is: " << stage_node->assigned_device_name() << std::endl;
   NodeDef node_def_stage;
   TF_CHECK_OK(NodeDefBuilder(stage_node->name(), "TensorBufferPut")
     .Device(stage_node->assigned_device_name())
@@ -1944,10 +1951,10 @@ void StageGraph(Graph* dest, Node* stage_node, Node* unstage_node,
   Status s;
   Node* stage_xxx = dest->AddNode(node_def_stage, &s);
   TF_CHECK_OK(s);
-  if (do_smart_stage_gpu)
-    stage_xxx->set_assigned_device_name(cpu_device_name);
+  //if (do_smart_stage_gpu)
+  //  stage_xxx->set_assigned_device_name(cpu_device_name);
   dest->RemoveNode(stage_node);
-
+  std::cout << "device name is: " << unstage_node->assigned_device_name() << std::endl;
   NodeDef node_def_unstage;
   TF_CHECK_OK(NodeDefBuilder(unstage_node->name(), "TensorBufferTake")
     .Device(unstage_node->assigned_device_name())
@@ -1959,15 +1966,15 @@ void StageGraph(Graph* dest, Node* stage_node, Node* unstage_node,
     .Finalize(&node_def_unstage));
   Node* unstage_xxx = dest->AddNode(node_def_unstage, &s);
   TF_CHECK_OK(s);
-  if (do_smart_stage_gpu)
-    unstage_xxx->set_assigned_device_name(cpu_device_name);
+  //if (do_smart_stage_gpu)
+  //  unstage_xxx->set_assigned_device_name(cpu_device_name);
   dest->RemoveNode(unstage_node);
 
   for (auto it = edge_to_stage.begin(); it != edge_to_stage.end(); ++it) {
     const Edge* e = it->first;
     dest->AddEdge(e->src(), e->src_output(), stage_xxx, it->second);
   }
-
+  auto stage_device_name = stage_xxx->assigned_device_name();
   // place node of stage subgraph on CPU
   if (do_smart_stage_gpu) {
     auto set_stage_sub_graph_node_device = [cpu_device_name](Node *n) {
@@ -1975,6 +1982,19 @@ void StageGraph(Graph* dest, Node* stage_node, Node* unstage_node,
     };
     ReverseDFSFrom(*dest, {stage_xxx}, std::move(set_stage_sub_graph_node_device), nullptr);
   }
+  stage_xxx->set_assigned_device_name(stage_device_name);
+
+  // std::vector<Node*> unique_node;
+  // for (auto node : dest->op_nodes()) {
+  //   if (node->type_string() == "Unique") {
+  //     unique_node.push_back(node);
+  //   }
+  // }
+  // auto set_stage_sub_graph_node_device = [stage_device_name](Node *n) {
+  //   n->set_assigned_device_name(stage_device_name);
+  // };
+
+  // DFSFrom(*dest, unique_node, std::move(set_stage_sub_graph_node_device), nullptr);
 
   for (auto it = edge_to_unstage.begin(); it != edge_to_unstage.end(); ++it) {
     const Edge* e = it->first;
@@ -1995,7 +2015,7 @@ void GetStagingEdges(const Graph& dest, const std::unordered_set<Node *>& source
       q.push(n);
     }
   }
-
+  //DFS find all sub node
   std::vector<bool> is_var_relate(dest.num_node_ids(), false);
   while (!q.empty()) {
     const Node* node = q.front();
@@ -2021,7 +2041,6 @@ void GetStagingEdges(const Graph& dest, const std::unordered_set<Node *>& source
     queue.pop();
     if (has_visit_node.find(n) != has_visit_node.end())
       continue;
-    
     has_visit_node.insert(n);
     for (auto edge : n->out_edges()) {
       Node *dst = edge->dst();

@@ -43,6 +43,11 @@ namespace tensorflow {
 
 #define TF_RESOURCE_DEBUG_STRING_CONST const
 
+// class TensorVec {
+//  public:
+//   explicit TensorVec()
+// };
+
 class TensorBuf : public ResourceBase {
  public:
   explicit TensorBuf(int64 capacity)

@@ -23,7 +23,6 @@ limitations under the License.
 #if GOOGLE_CUDA
 #define EIGEN_USE_GPU
 
-#include <cuda_runtime.h>
 #include "tensorflow/core/common_runtime/gpu/gpu_event_mgr.h"
 #include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/embedding/embedding_var.h"
@@ -45,19 +44,34 @@ namespace {
 
 template <typename TKey, typename TValue>
 struct GroupEmbeddingForWardArgs {
+  explicit GroupEmbeddingForWardArgs(TValue *emb_variable, TValue *emb_vector,
+           int *offset_indices, int nnz, int64_t *sp_indices = nullptr,
+           TKey *sp_values = nullptr, int64_t emb_row_size = -1) {
+    emb_variable_ = emb_variable;
+    emb_vector_ = emb_vector;
+    offset_indices_ = offset_indices;
+    nnz_ = nnz;
+    sp_indices_ = sp_indices;
+    sp_values_ = sp_values;
+    emb_row_size_ = emb_row_size;
+  }
+  GroupEmbeddingForWardArgs() {
+    nnz_ = 0;
+    emb_row_size_ = 0;
+    sp_values_ = nullptr;
+    sp_indices_ = nullptr;
+    offset_indices_ = nullptr;
+    emb_variable_ = nullptr;
+    emb_vector_ = nullptr;
+  }
+
+  int nnz_;
   int64_t emb_row_size_;
-  TValue *emb_variable_;
-  TValue *emb_vector_;
   TKey *sp_values_;
   int64_t *sp_indices_;
   int *offset_indices_;
-  int nnz_;
-
-  __device__ __host__ GroupEmbeddingForWardArgs(TValue *emb_variable, TValue *emb_vector,
-      int *offset_indices, int nnz, int64_t *sp_indices = nullptr,
-      TKey *sp_values = nullptr, int64_t emb_row_size = -1):
-          emb_variable_(emb_variable), emb_vector_(emb_vector), offset_indices_(offset_indices),
-          nnz_(nnz), sp_indices_(sp_indices), sp_values_(sp_values), emb_row_size_(emb_row_size) {}
+  TValue *emb_variable_;
+  TValue *emb_vector_;
 };
 
 template <typename TKey, typename TValue>
@@ -78,173 +92,134 @@ __global__ void SetToIntMaxSTG128(GroupEmbeddingForWardArgs<TKey, TValue> *args,
   }
 }
 
-// template <typename TKey, typename TValue>
-// __global__ void CalcPerElementRowInBatchValuesOffset(GroupEmbeddingForWardArgs<TKey, TValue> *args) {
-//   const int thread_offset = blockIdx.x * blockDim.x + threadIdx.x;
-//   const int i_ev = blockIdx.y;
-//   if (thread_offset < int(args[i_ev].nnz_)) {
-//     const int64_t element_row = args[i_ev].sp_indices_[2 * thread_offset];
-//     atomicMin(args[i_ev].offset_indices_ + int(element_row), thread_offset);
-//   }
-// }
-
-__global__ void CalcPerElementRowInBatchValuesOffset(const int64_t *indices,
-                                                     int *values_offset,
-                                                     const int64_t nnz) {
-  const int thread_offset = blockIdx.x * blockDim.x + threadIdx.x;
-  if (thread_offset < int(nnz)) {
-    const int64_t element_row = indices[2 * thread_offset];
-    atomicMin(values_offset + int(element_row), thread_offset);
-  }
-}
-
 template <typename TKey, typename TValue>
-__global__ void RemoveBadCase(GroupEmbeddingForWardArgs<TKey, TValue> *args,
-                              const int64_t batch_size, const int num_lookups) {
+__global__ void CalcPerElementRowInBatchValuesOffset(GroupEmbeddingForWardArgs<TKey, TValue> *args) {
   const int thread_offset = blockIdx.x * blockDim.x + threadIdx.x;
-  const int int_max = 0x7fffffff;
-  if (thread_offset < int(batch_size - 1)) {
-    for (int i = 0; i < num_lookups; ++i) {
-      volatile int *values_offset = args[i].offset_indices_;
-      while (values_offset[thread_offset + 1] == int_max) {
-      }
-      const int compare = values_offset[thread_offset + 1];
-      atomicMin((int *)values_offset + int(thread_offset), compare);
-    }
+  const int i_ev = blockIdx.y;
+  if (thread_offset < int(args[i_ev].nnz_)) {
+    const int64_t element_row = args[i_ev].sp_indices_[2 * thread_offset];
+    atomicMax(args[i_ev].offset_indices_ + int(element_row), thread_offset);
   }
 }
 
 template <typename TKey, typename TValue, Combiner combiner>
-__global__ void EmbeddingVarComputeFn(const int batch_size, const int dimension,
-                            const float max_norm, const TValue* default_v, const int num_lookups, 
+__global__ void ComputeEVFn(const int batch_size, const int dimension,
+                            const float max_norm, const int num_lookups,
                             GroupEmbeddingForWardArgs<TKey, TValue> *args) {
   __shared__ float l2_sum[1];
 
   int bid = blockIdx.x;
-  int ev_id = blockIdx.y;
   int tid = threadIdx.x;
-  // int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (bid < batch_size && tid < dimension) {
-    int value_offset = args[ev_id].offset_indices_[bid];
-    int feature_num;
-    if (bid == int(batch_size) - 1) {
-      feature_num = int(args[ev_id].nnz_) - value_offset;
-    } else {
-      feature_num = args[ev_id].offset_indices_[bid + 1] - value_offset;
-    }
-    TValue out = 0.0;
+    for (size_t i = 0; i < num_lookups; ++i) {
+      int value_offset = args[i].offset_indices_[bid];
+      int feature_num;
+      if (bid == int(batch_size) - 1) {
+        feature_num = int(args[i].nnz_) - value_offset;
+      } else {
+        feature_num = args[i].offset_indices_[bid + 1] - value_offset;
+      }
 
-    for (int j = 0; j < feature_num; ++j) {
-      int64_t feature_offset = (value_offset + j) * dimension;
-      TValue sum = args[ev_id].emb_variable_[feature_offset + tid];
-      if (isnan(sum) || isinf(sum)) {
-        sum = default_v[0];
-      }
-      if (max_norm >= 0.0) {
-        if (tid == 0) {
-          l2_sum[0] = 0.0;
+      TValue out = 0.0f;
+
+      // reduce in a slot
+      for (int j = 0; j < feature_num; ++j) {
+        int feature_offset = (value_offset + j) * dimension;
+        TValue sum = args[i].emb_variable_[feature_offset + tid];
+        if (max_norm >= 0.0f) {
+          if (tid == 0) {
+            l2_sum[0] = 0.0f;
+          }
+          __syncthreads();
+          atomicAdd(l2_sum, sum * sum);
+          __syncthreads();
+          float l2_norm = sqrtf(l2_sum[0]);
+          if (l2_norm > max_norm) {
+            sum *= max_norm / l2_norm;
+          }
         }
-        __syncthreads();
-        atomicAdd(l2_sum, sum * sum);
-        __syncthreads();
-        float l2_norm = sqrtf(l2_sum[0]);
-        if (l2_norm > max_norm) {
-          sum *= max_norm / l2_norm;
-        }
+        out += sum;
       }
-      out += sum;
+      out = Combine<combiner>(out, feature_num);
+      args[i].emb_vector_[bid * dimension + tid] = out;
     }
-    // printf("out is %f \n", out);
-    out = Combine<combiner>(out, feature_num);
-    args[ev_id].emb_vector_[bid * dimension + tid] = out;
   }
 }
 
 template <typename TKey, typename TValue, Combiner combiner>
-__global__ void VariableComputeFn(const int batch_size, const int emb_vec_size,
-                                const float max_norm, const TValue* default_v, const int num_lookups, 
+__global__ void ComputeSparseFn(const int batch_size, const int emb_vec_size,
+                                const float max_norm, const int num_lookups,
                                 GroupEmbeddingForWardArgs<TKey, TValue> *args) {
   __shared__ float l2_sum[1];
   int bid = blockIdx.x;
-  int ev_id = blockIdx.y;
   int tid = threadIdx.x;
-  // int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (bid < batch_size && tid < emb_vec_size) {
-    int value_offset = args[ev_id].offset_indices_[bid];
-    int feature_num;
-    if (bid == int(batch_size) - 1) {
-      feature_num = int(args[ev_id].nnz_) - value_offset;
-    } else {
-      feature_num = args[ev_id].offset_indices_[bid + 1] - value_offset;
-    }
-    TValue out = 0.0f;
-    // __shared__ TValue shared_embedding_variable[feature_num*emb_vec_size];
-    // shared
-    const TValue *emb_variable = args[ev_id].emb_variable_;
-    const int64_t emb_dim_limit = args[ev_id].emb_row_size_;
-    for (int i = 0; i < feature_num; i++) {
-      int64_t indices = int(args[ev_id].sp_values_[value_offset + i]);
-      TValue emb_element = 0.0;
-      if (FastBoundsCheck(indices, emb_dim_limit)) {
-        emb_element = emb_variable[indices * emb_vec_size + tid];
+    for (int idx = 0; idx < num_lookups; ++idx) {
+      int value_offset = args[idx].offset_indices_[bid];
+      int feature_num;
+      if (bid == int(batch_size) - 1) {
+        feature_num = int(args[idx].nnz_) - value_offset;
+      } else {
+        feature_num = args[idx].offset_indices_[bid + 1] - value_offset;
       }
-      if (isnan(emb_element) || isinf(emb_element)) {
-        emb_element = default_v[0];
-      }
-      if (max_norm >= 0.0f) {
-        // calc l2 norm of this emb row(per block) and compare with max_norm.
-        // if greater than max_norm, then clip every element with factor
-        // max_norm / l2norm
-        if (tid == 0) {
-          l2_sum[0] = 0.0f;
+      TValue out = 0.0f;
+      const TValue *emb_variable = args[idx].emb_variable_;
+      const int64_t emb_dim_limit = args[idx].emb_row_size_;
+      for (int i = 0; i < feature_num; i++) {
+        int64_t indices = int(args[idx].sp_values_[value_offset + i]);
+        TValue emb_element = 0.0;
+        if (FastBoundsCheck(indices, emb_dim_limit)) {
+          emb_element = emb_variable[indices * emb_vec_size + tid];
         }
-        __syncthreads();
-        atomicAdd(l2_sum, emb_element * emb_element);
-        __syncthreads();
-        float l2_norm = sqrtf(l2_sum[0]);
-        if (l2_norm > max_norm) {
-          emb_element *= max_norm / l2_norm;
+        if (max_norm >= 0.0f) {
+          // calc l2 norm of this emb row(per block) and compare with max_norm.
+          // if greater than max_norm, then clip every element with factor
+          // max_norm / l2norm
+          if (tid == 0) {
+            l2_sum[0] = 0.0f;
+          }
+          __syncthreads();
+          atomicAdd(l2_sum, emb_element * emb_element);
+          __syncthreads();
+          float l2_norm = sqrtf(l2_sum[0]);
+          if (l2_norm > max_norm) {
+            emb_element *= max_norm / l2_norm;
+          }
         }
+        out += emb_element;
       }
-      out += emb_element;
-    }
 
-    out = Combine<combiner>(out, feature_num);
-    args[ev_id].emb_vector_[bid * emb_vec_size + tid] = out;
+      out = Combine<combiner>(out, feature_num);
+      args[idx].emb_vector_[bid * emb_vec_size + tid] = out;
+    }
   }
 }
 
 }  // namespace
 
 template <typename TKey, typename TValue>
-class GroupEmbeddingLookupForWard {
+class GroupEmbeddingForWard {
  public:
   void initialize(int num_lookups) {
     nums = num_lookups;
-    args_size = sizeof(GroupEmbeddingForWardArgs<TKey, TValue>);
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, 0); //!prop.canMapHostMemory
-    if (true) {
-      enable_pinned_memory = false;
+    args_.reset(new GroupEmbeddingForWardArgs<TKey, TValue> *[nums]);
+    for (int i = 0; i < nums; ++i) {
       CK_CUDA_THROW_(cudaMallocHost(
-          (void**)&h_args_, args_size * num_lookups
+        (void**)&args_[i], sizeof(GroupEmbeddingForWardArgs<TKey, TValue>)
       ));
-      CK_CUDA_THROW_(cudaMalloc(
-        &d_args_, args_size * num_lookups));
-    } else {
-      enable_pinned_memory = true;
-      cudaSetDeviceFlags(cudaDeviceMapHost);
-      CK_CUDA_THROW_(cudaHostAlloc(
-        (void**)&h_args_, args_size * num_lookups, cudaHostAllocMapped
-      ));
-      cudaHostGetDevicePointer(&d_args_, h_args_, 0);
     }
+    
+
+    CK_CUDA_THROW_(cudaMalloc(
+        &d_args_,
+        num_lookups * sizeof(GroupEmbeddingForWardArgs<TKey, TValue>)));
+    args_size = sizeof(GroupEmbeddingForWardArgs<TKey, TValue>);
   }
 
-  ~GroupEmbeddingLookupForWard() {
-    if (h_args_) {
-      CK_CUDA_THROW_(cudaFreeHost(h_args_));
+  ~GroupEmbeddingForWard() {
+    if (args_) {
+      CK_CUDA_THROW_(cudaFreeHost(args_.get()));
     }
 
     if (d_args_) {
@@ -252,76 +227,63 @@ class GroupEmbeddingLookupForWard {
     }
   }
 
-  void set(int idx, GroupEmbeddingForWardArgs<TKey, TValue>& args) {
-    memcpy(h_args_ + idx, &args, args_size);
+  void set(int idx, GroupEmbeddingForWardArgs<TKey, TValue> args) {
+    memcpy(&args_[idx], &args, args_size);
+    std::cout << "allocating " << idx << " idx " << std::endl;
+    // args_[idx].emb_variable_ = emb_variable;
+    // args_[idx].emb_vector_ = emb_vector;
+    // args_[idx].offset_indices_ = offset_indices;
+    // args_[idx].sp_indices_ = sp_indices;
+    // args_[idx].nnz_ = nnz;
+    // args_[idx].sp_values_ = sp_values;
+    // args_[idx].emb_row_size_ = emb_row_size;
   }
 
-  template <typename ForwardFn>
-  void compute(ForwardFn fn, const int batch_size, const int dimension,
-               const float max_norm, const TValue* default_v, cudaStream_t stream) {
-    // if (!enable_pinned_memory) {
-    //   CK_CUDA_THROW_(cudaMemcpyAsync(
-    //     d_args_, h_args_, nums * args_size, cudaMemcpyHostToDevice, stream));
-    // }
+  template <typename GradFn>
+  void compute(GradFn fn, const int batch_size, const int dimension,
+               const float max_norm, cudaStream_t stream) {
     CK_CUDA_THROW_(cudaMemcpyAsync(
-        d_args_, h_args_, nums * args_size, cudaMemcpyHostToDevice, stream));
+        d_args_, args_.get(), nums * args_size, cudaMemcpyHostToDevice, stream));
+    std::cout << "calling compute " << std::endl;
     CK_CUDA_THROW_(cudaStreamSynchronize(stream));
-    {
-      const int threads = 1024;
-      int blocks = batch_size / threads;
-      blocks = batch_size % threads == 0 ? blocks : blocks + 1;
-      SetToIntMaxSTG128<<<blocks, threads, 0, stream>>>(d_args_,
-                                                        int(batch_size), nums);
-    }
     // {
     //   const int threads = 1024;
-    //   int blocks = batch_size % threads == 0 ? (batch_size / threads) : (batch_size / threads + 1);
-    //   dim3 grid_size(blocks, nums);
-    //   dim3 block_size(threads, 1);
-    //   CalcPerElementRowInBatchValuesOffset<<<grid_size, block_size, 0, stream>>>(d_args_);
+    //   int blocks = batch_size / threads;
+    //   blocks = batch_size % threads == 0 ? blocks : blocks + 1;
+    //   SetToIntMaxSTG128<<<blocks, threads, 0, stream>>>(d_args_,
+    //                                                     int(batch_size), nums);
     // }
-    {
-      for (int i = 0; i < nums; ++i) {
-        const int threads = 1024;
-        int &nnz = h_args_[i].nnz_;
-        int blocks = nnz % threads == 0 ? (nnz / threads) : (nnz / threads + 1);
-        // calculate values offset
-        CalcPerElementRowInBatchValuesOffset<<<blocks, threads, 0, stream>>>(
-            h_args_[i].sp_indices_, h_args_[i].offset_indices_, nnz);
-      }
-    }
-    {
+    /*{
       const int threads = 1024;
-      int blocks = batch_size % threads == 0 ? (batch_size / threads)
-                                             : (batch_size / threads + 1);
-
-      RemoveBadCase<<<blocks, threads, 0, stream>>>(d_args_, batch_size, nums);
+      int blocks = batch_size % threads == 0 ? (batch_size / threads) : (batch_size / threads + 1);
+      dim3 grid_size(blocks, nums);
+      dim3 block_size(threads, 1);
+      CalcPerElementRowInBatchValuesOffset<<<grid_size, block_size, 0, stream>>>(d_args_);
     }
+
     CK_CUDA_THROW_(cudaStreamSynchronize(stream));
     {
-      int nums_in_grids = nums;
-      dim3 grid_size(batch_size, nums_in_grids);
-      dim3 block_size(dimension, 1);
-      
-      fn<<<grid_size, block_size, 0, stream>>>(batch_size, dimension, max_norm, default_v, 
+      // future improve to mapping tp batch_size * num_lookup
+      const int block_size = int(batch_size);
+      const int threads = int(dimension);
+      fn<<<block_size, threads, 0, stream>>>(batch_size, dimension, max_norm,
                                              nums, d_args_);
-    }
+    }*/
 
     CK_CUDA_THROW_(cudaGetLastError());
   }
 
  protected:
   int nums;
-  bool enable_pinned_memory;
   size_t args_size {0};
-  GroupEmbeddingForWardArgs<TKey, TValue> *h_args_;
-  GroupEmbeddingForWardArgs<TKey, TValue> *d_args_;
+  std::unique_ptr<GroupEmbeddingForWardArgs<TKey, TValue> *[]> args_;
+  GroupEmbeddingForWardArgs<TKey, TValue> * d_args_;
 };
 
 template <typename TKey, typename TValue>
-class GroupEmbeddingLookupForwardBaseOp : public OpKernel {
+class GroupLookupForWardBaseOp : public OpKernel {
  public:
-  explicit GroupEmbeddingLookupForwardBaseOp(OpKernelConstruction *c) : OpKernel(c) {
+  explicit GroupLookupForWardBaseOp(OpKernelConstruction *c) : OpKernel(c) {
     OP_REQUIRES_OK(c, c->GetAttr("combiner", &combiner_));
     OP_REQUIRES_OK(c, c->GetAttr("num_lookups", &num_lookups_));
     OP_REQUIRES_OK(c, c->GetAttr("dimension", &dimension_));
@@ -334,14 +296,14 @@ class GroupEmbeddingLookupForwardBaseOp : public OpKernel {
   float max_norm_;
   int num_lookups_;
   int dimension_;
-  GroupEmbeddingLookupForWard<TKey, TValue> lookuper_;
+  GroupEmbeddingForWard<TKey, TValue> lookuper_;
 };
 
 template <typename TFKey, typename TKey, typename TValue>
-class GroupEmbeddingVarLookupOp : public GroupEmbeddingLookupForwardBaseOp<TKey, TValue> {
+class GroupEmbeddingVarLookup : public GroupLookupForWardBaseOp<TKey, TValue> {
  public:
-  explicit GroupEmbeddingVarLookupOp(OpKernelConstruction *c)
-      : GroupEmbeddingLookupForwardBaseOp<TKey, TValue>(c) {
+  explicit GroupEmbeddingVarLookup(OpKernelConstruction *c)
+      : GroupLookupForWardBaseOp<TKey, TValue>(c) {
     OP_REQUIRES_OK(c, c->GetAttr("is_use_default_value_tensor",
                                  &is_use_default_value_tensor_));
     if (is_use_default_value_tensor_) {
@@ -356,16 +318,14 @@ class GroupEmbeddingVarLookupOp : public GroupEmbeddingLookupForwardBaseOp<TKey,
     }
   }
 
-  ~GroupEmbeddingVarLookupOp() { delete[] occupy_flag_; }
+  ~GroupEmbeddingVarLookup() { delete[] occupy_flag_; }
 
   void Compute(OpKernelContext *ctx) override {
     EmbeddingVar<TFKey, TValue> *ev = nullptr;
     const auto &device = ctx->eigen_device<GPUDevice>();
-    auto event_mgr = ctx->device()->tensorflow_gpu_device_info()->event_mgr;
     int64_t batch_size = -1;
     TValue *default_v = nullptr;
-    auto stream = ctx->op_device_context()->stream();
-    
+
     for (size_t i = 0; i < this->num_lookups_; ++i) {
       const Tensor &sp_values_tensor = ctx->input(this->num_lookups_ + i);
       auto sp_values = sp_values_tensor.flat<TFKey>();
@@ -377,18 +337,13 @@ class GroupEmbeddingVarLookupOp : public GroupEmbeddingLookupForwardBaseOp<TKey,
 
       const Tensor &dense_shape_tensor = ctx->input(this->num_lookups_ * 3 + i);
       auto dense_shape = dense_shape_tensor.flat<int64>().data();
-      int64* cpu_dense_shape = new int64[2];
-      se::DeviceMemoryBase gpu_src(
-        const_cast<int64*>(dense_shape), 2 * sizeof(int64));
-      stream->ThenMemcpy(cpu_dense_shape, gpu_src, 2 * sizeof(int64));
-      SyncWithEventMgr(stream, event_mgr);
 
       if (batch_size == -1) {
-        batch_size = cpu_dense_shape[0];
+        batch_size = dense_shape[0];
       }
 
       OP_REQUIRES(
-          ctx, batch_size == cpu_dense_shape[0],
+          ctx, batch_size == dense_shape[0],
           errors::InvalidArgument(
               "shape[0] of each tensor in offset_indices are different."));
 
@@ -559,16 +514,16 @@ class GroupEmbeddingVarLookupOp : public GroupEmbeddingLookupForwardBaseOp<TKey,
     }
 
     if (this->combiner_ == "mean") {
-      this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Mean>, batch_size,
-                              this->dimension_, this->max_norm_, default_v, 
+      this->lookuper_.compute(ComputeEVFn<TKey, TValue, Mean>, batch_size,
+                              this->dimension_, this->max_norm_,
                               device.stream());
     } else if (this->combiner_ == "sum") {
-      this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Sum>, batch_size,
-                              this->dimension_, this->max_norm_, default_v, 
+      this->lookuper_.compute(ComputeEVFn<TKey, TValue, Sum>, batch_size,
+                              this->dimension_, this->max_norm_,
                               device.stream());
     } else {
-      this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Sqrtn>, batch_size,
-                              this->dimension_, this->max_norm_, default_v,
+      this->lookuper_.compute(ComputeEVFn<TKey, TValue, Sqrtn>, batch_size,
+                              this->dimension_, this->max_norm_,
                               device.stream());
     }
   }
@@ -582,14 +537,17 @@ class GroupEmbeddingVarLookupOp : public GroupEmbeddingLookupForwardBaseOp<TKey,
   bool *occupy_flag_ = nullptr;
   mutex m_init_occupy_flag_;
 };
-                            
+
+
 #define REGISTER_GPU_KERNELS(key_type_tf, key_type, dtype_tf, dtype) \
   REGISTER_KERNEL_BUILDER(                                           \
       Name("GroupEmbeddingVarLookup")                                  \
-          .Device(DEVICE_GPU)                                        \   
+          .Device(DEVICE_GPU)                                        \
+          .HostMemory("sp_indices")                                  \
+          .HostMemory("dense_shape")                                 \
           .TypeConstraint<key_type_tf>("Tkeys")                      \
           .TypeConstraint<dtype>("dtype"),                           \
-      GroupEmbeddingVarLookupOp<key_type_tf, key_type, dtype>)
+      GroupEmbeddingVarLookup<key_type_tf, key_type, dtype>)
 
 REGISTER_GPU_KERNELS(int64, int64_t, float, float);
 REGISTER_GPU_KERNELS(int32, int32_t, float, float);
@@ -598,49 +556,32 @@ REGISTER_GPU_KERNELS(int32, int32_t, float, float);
 
 template <typename TFKey, typename TKey, typename TValue>
 class GroupVariableLookupOp
-    : public GroupEmbeddingLookupForwardBaseOp<TKey, TValue> {
+    : public GroupLookupForWardBaseOp<TKey, TValue> {
  public:
   explicit GroupVariableLookupOp(OpKernelConstruction *c)
-      : GroupEmbeddingLookupForwardBaseOp<TKey, TValue>(c) {
-      OP_REQUIRES_OK(c, c->GetAttr("is_use_default_value_tensor",
-                                &is_use_default_value_tensor_));
-  }
+      : GroupLookupForWardBaseOp<TKey, TValue>(c) {}
 
   void Compute(OpKernelContext *ctx) override {
-    const auto &device = ctx->eigen_device<GPUDevice>();
-    auto event_mgr = ctx->device()->tensorflow_gpu_device_info()->event_mgr;
-    int64_t batch_size = -1;
-    TValue *default_v = nullptr;
-    auto stream = ctx->op_device_context()->stream();
+    int batch_size = -1;
+    auto stream = ctx->eigen_device<GPUDevice>().stream();
 
     for (int i = 0; i < this->num_lookups_; ++i) {
       const Tensor &emb_variable_tensor = ctx->input(i);
       const Tensor &sp_values_tensor = ctx->input(this->num_lookups_ + i);
       int64 emb_row_size = emb_variable_tensor.shape().dim_size(0);
-      int64 emb_vec_size = emb_variable_tensor.shape().dim_size(1); // emb_vec_size is equal to dimension
+      int64 emb_vec_size = emb_variable_tensor.shape().dim_size(1);
 
       const Tensor &sp_indices_tensor = ctx->input(this->num_lookups_ * 2 + i);
       int nnz = sp_indices_tensor.shape().dim_size(0);
 
       const Tensor &dense_shape_tensor = ctx->input(this->num_lookups_ * 3 + i);
       auto dense_shape = dense_shape_tensor.flat<int64>().data();
-      int64* cpu_dense_shape = new int64[2];
-      se::DeviceMemoryBase gpu_src(
-        const_cast<int64*>(dense_shape), 2 * sizeof(int64));
-      stream->ThenMemcpy(cpu_dense_shape, gpu_src, 2 * sizeof(int64));
-      SyncWithEventMgr(stream, event_mgr);
-
-      if (default_v == nullptr) {
-        if (is_use_default_value_tensor_) {
-          default_v = (TValue *)ctx->input(4 * this->num_lookups_).data();
-        } 
-      }
 
       if (batch_size == -1) {
-        batch_size = cpu_dense_shape[0];
+        batch_size = dense_shape[0];
       } else {
         OP_REQUIRES(
-            ctx, batch_size == cpu_dense_shape[0],
+            ctx, batch_size == dense_shape[0],
             errors::InvalidArgument(
                 "shape[0] of each tensor in offset_indices are different."));
       }
@@ -649,6 +590,10 @@ class GroupVariableLookupOp
 
       emb_vectors_tensor_shape = TensorShape(std::vector<int64>(
           {static_cast<long long>(batch_size), emb_vec_size}));
+      OP_REQUIRES(
+          ctx, emb_vec_size == this->dimension_,
+          errors::InvalidArgument(
+              "shape[0] of each tensor in offset_indices are different."));
       Tensor *emb_vectors_tensor = nullptr;
       // allocate output
       OP_REQUIRES_OK(ctx, ctx->allocate_output(i, emb_vectors_tensor_shape,
@@ -663,40 +608,35 @@ class GroupVariableLookupOp
                                                values_offset_tensor_shape,
                                                &values_offset_tensor));
       auto values_offset = values_offset_tensor->flat<int>().data();
-
       GroupEmbeddingForWardArgs<TKey, TValue> tmp_group_embedding_args(
         const_cast<TValue *>(reinterpret_cast<const TValue *>(
               emb_variable_tensor.flat<TValue>().data())),
         emb_vectors, values_offset, nnz,
-        const_cast<int64_t *>(reinterpret_cast<const int64_t *>(
-            sp_indices_tensor.flat<int64>().data())),
-        const_cast<TKey *>(reinterpret_cast<const TKey *>(
-            sp_values_tensor.flat<TFKey>().data())),
-        emb_row_size);
+          const_cast<int64_t *>(reinterpret_cast<const int64_t *>(
+              sp_indices_tensor.flat<int64>().data())),
+          const_cast<TKey *>(reinterpret_cast<const TKey *>(
+              sp_values_tensor.flat<TFKey>().data())),
+          emb_row_size);
       this->lookuper_.set(i, tmp_group_embedding_args);
     }
-
     if (this->combiner_ == "mean") {
-      this->lookuper_.compute(VariableComputeFn<TKey, TValue, Mean>, batch_size,
-                              this->dimension_, this->max_norm_, default_v, device.stream());
+      this->lookuper_.compute(ComputeSparseFn<TKey, TValue, Mean>, batch_size,
+                              this->dimension_, this->max_norm_, stream);
     } else if (this->combiner_ == "sum") {
-      this->lookuper_.compute(VariableComputeFn<TKey, TValue, Sum>, batch_size,
-                              this->dimension_, this->max_norm_, default_v, device.stream());
+      this->lookuper_.compute(ComputeSparseFn<TKey, TValue, Sum>, batch_size,
+                              this->dimension_, this->max_norm_, stream);
     } else {
-      this->lookuper_.compute(VariableComputeFn<TKey, TValue, Sqrtn>, batch_size,
-                              this->dimension_, this->max_norm_, default_v, device.stream());
+      this->lookuper_.compute(ComputeSparseFn<TKey, TValue, Sqrtn>, batch_size,
+                              this->dimension_, this->max_norm_, stream);
     }
   }
- private:
-  bool is_use_default_value_tensor_;
 };
-
-// .HostMemory("dense_shape")                                 
 
 #define REGISTER_GPU_KERNELS(key_type_tf, key_type, dtype_tf, dtype) \
   REGISTER_KERNEL_BUILDER(                                           \
       Name("GroupVariableLookup")                             \
           .Device(DEVICE_GPU)                                        \
+          .HostMemory("dense_shape")                                 \
           .TypeConstraint<key_type_tf>("Tkeys")                      \
           .TypeConstraint<dtype>("dtype"),                           \
       GroupVariableLookupOp<key_type_tf, key_type, dtype>)

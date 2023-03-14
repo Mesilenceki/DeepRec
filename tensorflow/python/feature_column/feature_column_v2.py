@@ -4254,6 +4254,7 @@ class GroupEmbeddingScope(group_embedding_column.GroupEmbeddingScopeBase):
       with variable_scope.variable_scope(
                 None, default_name=ec._var_scope_name):
         embedding_weight = ec.create_embedding(weight_collections, trainable)
+        embedding_weight.target_gpu = -1
       embedding_weights.append(embedding_weight)
 
     output_tensors.extend(embedding_ops.group_embedding_lookup_sparse(

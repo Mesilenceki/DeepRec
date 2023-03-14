@@ -713,7 +713,7 @@ def main(tf_config=None, server=None):
                 stock_tf=args.tf,
                 adaptive_emb=args.adaptive_emb,
                 inputs=next_element,
-                input_layer_partitioner=input_layer_partitioner,
+                input_layer_partitioner=None,
                 dense_layer_partitioner=dense_layer_partitioner)
 
     # Run model training and evaluation
@@ -946,8 +946,8 @@ def set_env_for_DeepRec():
     os.environ['STOP_STATISTIC_STEP'] = '110'
     os.environ['MALLOC_CONF']= \
         'background_thread:true,metadata_thp:auto,dirty_decay_ms:20000,muzzy_decay_ms:20000'
-    if args.group_embedding:
-        tf.config.experimental.enable_distributed_strategy(strategy="localized")
+    #if args.group_embedding:
+    #    tf.config.experimental.enable_distributed_strategy(strategy="localized")
 
 if __name__ == '__main__':
     parser = get_arg_parser()
