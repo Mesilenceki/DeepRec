@@ -370,7 +370,9 @@ REGISTER_OP("GroupEmbeddingVarLookup")
     .Attr("max_norm: float = -1.0")
     .Attr("num_lookups: int >= 1")
     .SetShapeFn([](InferenceContext* c) {
-      int num_lookups = c->num_outputs()/2;
+      int num_lookups;
+      TF_RETURN_IF_ERROR(c->GetAttr("num_lookups", &num_lookups));
+      
       for (int i = 0; i < num_lookups; ++i) {
         ShapeAndType handle_shape_and_type;
         TF_RETURN_IF_ERROR(
@@ -448,18 +450,24 @@ REGISTER_OP("GroupVariableLookup")
     .Attr("num_lookups: int >= 1")
     .Attr("is_use_default_value_tensor: bool = false")
     .SetShapeFn([](InferenceContext* ctx) {
-      int num_lookups = ctx->num_outputs() / 2;
+      int num_lookups;
+      TF_RETURN_IF_ERROR(ctx->GetAttr("num_lookups", &num_lookups));
+      
       for (int i = 0; i < num_lookups; ++i) {
         ShapeHandle temp;
         TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(num_lookups+i), 1, &temp));
         TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(2*num_lookups+i), 2, &temp));
         TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(3*num_lookups+i), 1, &temp));
-        ShapeHandle emb_var_shape;
-        TF_RETURN_IF_ERROR(ctx->WithRankAtLeast(ctx->input(i), 1, &emb_var_shape));
-        DimensionHandle emb_vec_size_dim = ctx->Dim(emb_var_shape, 1);
+        ShapeHandle unused;
+        TF_RETURN_IF_ERROR(ctx->WithRankAtLeast(ctx->input(i), 1, &unused));
+        ShapeHandle params_subshape;
+        TF_RETURN_IF_ERROR(ctx->Subshape(ctx->input(i), 1, &params_subshape));
+        DimensionHandle emb_vec_size_dim = ctx->Dim(params_subshape, 0);
         DimensionHandle batch_dim = ctx->UnknownDim();
         ShapeHandle output_shape = ctx->MakeShape({batch_dim, emb_vec_size_dim});
+        ShapeHandle offset_shape = ctx->MakeShape({batch_dim, 1});
         ctx->set_output(i, output_shape);
+        ctx->set_output(num_lookups+i, offset_shape);
       }
 
       return Status::OK();
