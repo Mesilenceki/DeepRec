@@ -94,33 +94,29 @@ __global__ void CalcPerElementRowOffset(const int64_t *indices,
   if (thread_offset < int(nnz)) {
     const int64_t element_row = indices[2 * thread_offset];
     atomicMin(values_offset + int(element_row), thread_offset);
-    __syncthreads();
-    for (int i = element_row-1; i > 0; --i) {
-      atomicMin(values_offset + element_row, thread_offset);
+  }
+}
+
+template <typename TKey, typename TValue>
+__global__ void FillEmptyRow(GroupEmbeddingForWardArgs<TKey, TValue> *args,
+                              const int64_t batch_size, const int num_lookups) {
+  const int thread_offset = blockIdx.x * blockDim.x + threadIdx.x;
+  const int int_max = 0x7fffffff;
+  if (thread_offset < int(batch_size - 1)) {
+    for (int i = 0; i < num_lookups; ++i) {
+      volatile int *values_offset = args[i].offset_indices_;
+      while (values_offset[thread_offset + 1] == int_max) {
+      }
+      const int compare = values_offset[thread_offset + 1];
+      atomicMin((int *)values_offset + int(thread_offset), compare);
     }
   }
 }
 
-// template <typename TKey, typename TValue>
-// __global__ void FillEmptyRow(GroupEmbeddingForWardArgs<TKey, TValue> *args,
-//                               const int64_t batch_size, const int num_lookups) {
-//   const int thread_offset = blockIdx.x * blockDim.x + threadIdx.x;
-//   const int int_max = 0x7fffffff;
-//   if (thread_offset < int(batch_size - 1)) {
-//     for (int i = 0; i < num_lookups; ++i) {
-//       volatile int *values_offset = args[i].offset_indices_;
-//       while (values_offset[thread_offset + 1] == int_max) {
-//       }
-//       const int compare = values_offset[thread_offset + 1];
-//       atomicMin((int *)values_offset + int(thread_offset), compare);
-//     }
-//   }
-// }
-
 template <typename TKey, typename TValue, Combiner combiner>
 __global__ void EmbeddingVarComputeFn(
     const int batch_size, const int dimension, const float max_norm,
-    const int ev_id,
+    const TValue *default_v, const int ev_id,
     GroupEmbeddingForWardArgs<TKey, TValue> *args) {
   __shared__ TValue l2_sum[1];
 
@@ -128,52 +124,51 @@ __global__ void EmbeddingVarComputeFn(
   int tid = threadIdx.x;
 
   if (bid < batch_size && tid < dimension) {
-//     for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
+    int value_offset = args[ev_id].offset_indices_[bid];
+    int feature_num;
+    if (bid == int(batch_size) - 1) {
+      feature_num = int(args[ev_id].nnz_) - value_offset;
+    } else {
+      feature_num = args[ev_id].offset_indices_[bid + 1] - value_offset;
+    }
+    TValue out = 0.0;
 
-      int value_offset = args[ev_id].offset_indices_[bid];
-      int feature_num;
-      if (bid == int(batch_size) - 1) {
-        feature_num = int(args[ev_id].nnz_) - value_offset;
-      } else {
-        feature_num = args[ev_id].offset_indices_[bid + 1] - value_offset;
-      }
-      TValue out = 0.0;
-
-      for (int j = 0; j < feature_num; ++j) {
-    #pragma unroll;
-        int64_t feature_offset = (value_offset + j) * dimension;
-        TValue sum = args[ev_id].emb_variable_[feature_offset + tid];
-        if (max_norm >= 0.0) {
-          if (tid == 0) {
-            l2_sum[0] = 0.0;
-          }
-          __syncthreads();
-          atomicAdd(l2_sum, sum * sum);
-          __syncthreads();
-          TValue l2_norm = sqrtf(l2_sum[0]);
-          if (l2_norm > max_norm) {
-            sum *= max_norm / l2_norm;
-          }
+    for (int j = 0; j < feature_num; ++j) {
+#pragma unroll;
+      int64_t feature_offset = (value_offset + j) * dimension;
+      TValue sum = args[ev_id].emb_variable_[feature_offset + tid];
+      if (max_norm >= 0.0) {
+        if (tid == 0) {
+          l2_sum[0] = 0.0;
         }
-        out += sum;
+        __syncthreads();
+        atomicAdd(l2_sum, sum * sum);
+        __syncthreads();
+        TValue l2_norm = sqrtf(l2_sum[0]);
+        if (l2_norm > max_norm) {
+          sum *= max_norm / l2_norm;
+        }
       }
-      out = Combine<combiner>(out, feature_num);
-      args[ev_id].emb_vector_[bid * dimension + tid] = out;
+      out += sum;
+    }
+
+    out = Combine<combiner>(out, feature_num);
+    args[ev_id].emb_vector_[bid * dimension + tid] = out;
   }
 }
 
 template <typename TKey, typename TValue, Combiner combiner>
 __global__ void VariableComputeFn(
     const int batch_size, const int emb_vec_size, const float max_norm,
-    const int ev_id,
+    const TValue *default_v, const int num_lookups,
     GroupEmbeddingForWardArgs<TKey, TValue> *args) {
   __shared__ TValue l2_sum[1];
   int bid = blockIdx.x;
   int tid = threadIdx.x;
 
   if (bid < batch_size && tid < emb_vec_size) {
-//     for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
-
+    for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
+#pragma unroll;
       int value_offset = args[ev_id].offset_indices_[bid];
       int feature_num;
       if (bid == int(batch_size) - 1) {
@@ -187,34 +182,31 @@ __global__ void VariableComputeFn(
       const TValue *emb_variable = args[ev_id].emb_variable_;
       const int64_t emb_dim_limit = args[ev_id].emb_row_size_;
       for (int i = 0; i < feature_num; i++) {
- #pragma unroll;
         int64_t indices = int(args[ev_id].sp_values_[value_offset + i]);
         TValue emb_element = 0.0;
         if (FastBoundsCheck(indices, emb_dim_limit)) {
           emb_element = emb_variable[indices * emb_vec_size + tid];
         }
-        if (max_norm >= 0.0f) {
-          // calc l2 norm of this emb row(per block) and compare with max_norm.
-          // if greater than max_norm, then clip every element with factor
-          // max_norm / l2norm
-          if (tid == 0) {
-            l2_sum[0] = 0.0f;
-          }
-          __syncthreads();
-          atomicAdd(l2_sum, emb_element * emb_element);
-          __syncthreads();
-          TValue l2_norm = sqrtf(l2_sum[0]);
-          if (l2_norm > max_norm) {
-            emb_element *= max_norm / l2_norm;
-          }
-        }
+        // if (max_norm >= 0.0f) {
+        //   // calc l2 norm of this emb row(per block) and compare with max_norm.
+        //   // if greater than max_norm, then clip every element with factor
+        //   // max_norm / l2norm
+        //   if (tid == 0) {
+        //     l2_sum[0] = 0.0f;
+        //   }
+        //   __syncthreads();
+        //   atomicAdd(l2_sum, emb_element * emb_element);
+        //   __syncthreads();
+        //   TValue l2_norm = sqrtf(l2_sum[0]);
+        //   if (l2_norm > max_norm) {
+        //     emb_element *= max_norm / l2_norm;
+        //   }
+        // }
         out += emb_element;
-      }
-      if (isnan(out) || isinf(out)) {
-        out = default_v[0];
       }
       out = Combine<combiner>(out, feature_num);
       args[ev_id].emb_vector_[bid * emb_vec_size + tid] = out;
+    }
   }
 }
 
@@ -226,8 +218,7 @@ class GroupEmbeddingLookupForWard {
   void initialize(const int num_lookups) {
     ev_nums_ = num_lookups;
     args_size_ = sizeof(GroupEmbeddingForWardArgs<TKey, TValue>);
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, 0);  //! prop.canMapHostMemory
+
     CK_CUDA_THROW_(cudaMallocHost((void **)&h_args_, args_size_ * num_lookups));
     CK_CUDA_THROW_(cudaMalloc(&d_args_, args_size_ * num_lookups));
   }
@@ -270,14 +261,14 @@ class GroupEmbeddingLookupForWard {
             h_args_[i].sp_indices_, h_args_[i].offset_indices_, nnz);
       }
     }
-    // {
-    //   const int threads = 1024;
-    //   int blocks = batch_size % threads == 0 ? (batch_size / threads)
-    //                                          : (batch_size / threads + 1);
+    {
+      const int threads = 1024;
+      int blocks = batch_size % threads == 0 ? (batch_size / threads)
+                                             : (batch_size / threads + 1);
 
-    //   FillEmptyRow<<<blocks, threads, 0, stream>>>(d_args_, batch_size,
-    //                                                 ev_nums_);
-    // }
+      FillEmptyRow<<<blocks, threads, 0, stream>>>(d_args_, batch_size,
+                                                    ev_nums_);
+    }
 
     CK_CUDA_THROW_(cudaStreamSynchronize(stream));
 
@@ -285,8 +276,9 @@ class GroupEmbeddingLookupForWard {
       //TODO: find out why mapped 2D grid slower
       const int block_size = int(batch_size);
       const int threads = int(dimension);
-      for (int i = 0; i < ev_nums_; ++i) {
-        compute_fn<<<block_size, threads, 0, stream>>>(batch_size, dimension, max_norm, i, d_args_);
+      for (int ev_id = 0; ev_id < ev_nums_; ++ev_id) {
+        compute_fn<<<block_size, threads, 0, stream>>>(batch_size, dimension, max_norm,
+                                                      default_v, ev_id, d_args_);
       }
     }
 
@@ -552,7 +544,7 @@ class GroupEmbeddingVarLookupOp
 #define REGISTER_GPU_KERNELS(key_type_tf, key_type, dtype_tf, dtype) \
   REGISTER_KERNEL_BUILDER(                                           \
       Name("GroupEmbeddingVarLookup")                                \
-          .Device(DEVICE_GPU)                                        \   
+          .Device(DEVICE_GPU)                                        \ 
           .TypeConstraint<key_type_tf>("Tkeys")                      \
           .TypeConstraint<dtype>("dtype"),                           \
       GroupEmbeddingVarLookupOp<key_type_tf, key_type, dtype>)
@@ -651,8 +643,6 @@ class GroupVariableLookupOp
  private:
   bool is_use_default_value_tensor_;
 };
-
-// .HostMemory("dense_shape")
 
 #define REGISTER_GPU_KERNELS(key_type_tf, key_type, dtype_tf, dtype) \
   REGISTER_KERNEL_BUILDER(Name("GroupVariableLookup")                \
