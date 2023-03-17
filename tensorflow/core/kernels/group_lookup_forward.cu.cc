@@ -120,7 +120,7 @@ __global__ void CalcPerElementRowOffset(const int64_t *indices,
 template <typename TKey, typename TValue, Combiner combiner>
 __global__ void EmbeddingVarComputeFn(
     const int batch_size, const int dimension, const float max_norm,
-    const TValue *default_v, const int num_lookups,
+    const int ev_id,
     GroupEmbeddingForWardArgs<TKey, TValue> *args) {
   __shared__ TValue l2_sum[1];
 
@@ -128,8 +128,8 @@ __global__ void EmbeddingVarComputeFn(
   int tid = threadIdx.x;
 
   if (bid < batch_size && tid < dimension) {
-    for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
-#pragma unroll;
+//     for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
+
       int value_offset = args[ev_id].offset_indices_[bid];
       int feature_num;
       if (bid == int(batch_size) - 1) {
@@ -140,6 +140,7 @@ __global__ void EmbeddingVarComputeFn(
       TValue out = 0.0;
 
       for (int j = 0; j < feature_num; ++j) {
+    #pragma unroll;
         int64_t feature_offset = (value_offset + j) * dimension;
         TValue sum = args[ev_id].emb_variable_[feature_offset + tid];
         if (max_norm >= 0.0) {
@@ -156,27 +157,23 @@ __global__ void EmbeddingVarComputeFn(
         }
         out += sum;
       }
-      if (isnan(out) || isinf(out)) {
-        out = default_v[0];
-      }
       out = Combine<combiner>(out, feature_num);
       args[ev_id].emb_vector_[bid * dimension + tid] = out;
-    }
   }
 }
 
 template <typename TKey, typename TValue, Combiner combiner>
 __global__ void VariableComputeFn(
     const int batch_size, const int emb_vec_size, const float max_norm,
-    const TValue *default_v, const int num_lookups,
+    const int ev_id,
     GroupEmbeddingForWardArgs<TKey, TValue> *args) {
   __shared__ TValue l2_sum[1];
   int bid = blockIdx.x;
   int tid = threadIdx.x;
 
   if (bid < batch_size && tid < emb_vec_size) {
-    for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
-#pragma unroll;
+//     for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
+
       int value_offset = args[ev_id].offset_indices_[bid];
       int feature_num;
       if (bid == int(batch_size) - 1) {
@@ -190,6 +187,7 @@ __global__ void VariableComputeFn(
       const TValue *emb_variable = args[ev_id].emb_variable_;
       const int64_t emb_dim_limit = args[ev_id].emb_row_size_;
       for (int i = 0; i < feature_num; i++) {
+ #pragma unroll;
         int64_t indices = int(args[ev_id].sp_values_[value_offset + i]);
         TValue emb_element = 0.0;
         if (FastBoundsCheck(indices, emb_dim_limit)) {
@@ -217,7 +215,6 @@ __global__ void VariableComputeFn(
       }
       out = Combine<combiner>(out, feature_num);
       args[ev_id].emb_vector_[bid * emb_vec_size + tid] = out;
-    }
   }
 }
 
@@ -288,8 +285,9 @@ class GroupEmbeddingLookupForWard {
       //TODO: find out why mapped 2D grid slower
       const int block_size = int(batch_size);
       const int threads = int(dimension);
-      compute_fn<<<block_size, threads, 0, stream>>>(batch_size, dimension, max_norm,
-                                                     default_v, ev_nums_, d_args_);
+      for (int i = 0; i < ev_nums_; ++i) {
+        compute_fn<<<block_size, threads, 0, stream>>>(batch_size, dimension, max_norm, i, d_args_);
+      }
     }
 
     CK_CUDA_THROW_(cudaGetLastError());
