@@ -339,6 +339,8 @@ class GroupEmbeddingVarLookupOp
     const auto &device = ctx->eigen_device<GPUDevice>();
     int64_t batch_size = -1;
     TValue *default_v = nullptr;
+    std::vector<Tensor> tensor_list;
+    tensor_list.reserve(this->num_lookups_);
 
     for (size_t i = 0; i < this->num_lookups_; ++i) {
       const Tensor &sp_values_tensor = ctx->input(this->num_lookups_ + i);
@@ -514,6 +516,7 @@ class GroupEmbeddingVarLookupOp
           out_base, op_output, values_offset, nnz,
           const_cast<int64_t *>(reinterpret_cast<const int64_t *>(sp_indices)));
       this->lookuper_.set(i, tmp_group_embedding_args);
+      tensor_list.emplace_back(std::move(out_tensor));
     }
 
     if (this->combiner_ == "mean") {

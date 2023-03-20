@@ -74,17 +74,17 @@ __global__ void ComputeEVGradFn(
         float grad_i = grad;
         int feature_offset = (value_offset + j) * dimension;
         if (max_norm > 0.0f) {
-          float emb_element = 0.0f;  // TODO: hujunqi get emb_weight
-          if (threadIdx.x == 0) {
-            l2_sum[0] = 0.0f;
-          }
-          __syncthreads();
-          atomicAdd(l2_sum, emb_element * emb_element);
-          __syncthreads();
-          float l2_norm = sqrtf(l2_sum[0]);
-          if (l2_norm > max_norm) {
-            grad_i *= max_norm / l2_norm;
-          }
+          // float emb_element = 0.0f;  // TODO: hujunqi get emb_weight
+          // if (threadIdx.x == 0) {
+          //   l2_sum[0] = 0.0f;
+          // }
+          // __syncthreads();
+          // atomicAdd(l2_sum, emb_element * emb_element);
+          // __syncthreads();
+          // float l2_norm = sqrtf(l2_sum[0]);
+          // if (l2_norm > max_norm) {
+          //   grad_i *= max_norm / l2_norm;
+          // }
         }
         args[idx].grads_output_[(value_offset + j) * dimension + threadIdx.x] =
             grad_i;
@@ -119,8 +119,7 @@ __global__ void ComputeSparseGradFn(
           emb_element =
               args[idx].emb_variable_[indices * dimension + threadIdx.x];
         }
-        emb_element =
-            args[idx].emb_variable_[indices * dimension + threadIdx.x];
+
         if (threadIdx.x == 0) {
           l2_sum[0] = 0.0f;
         }
