@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/graph_constructor.h"
 #include "tensorflow/core/public/session_options.h"
+#include "tensorflow/core/util/dump_graph.h"
 
 namespace tensorflow {
 
@@ -62,6 +63,13 @@ class StageSubGraphOnCPUPass : public GraphOptimizationPass {
     PlaceStageSubGraphOnCPU(cpu_device_name, new_graph.get());
       
     options.graph->swap(new_graph);
+
+    if (VLOG_IS_ON(1)) {
+      GraphDef graph_def;
+      options.graph->get()->ToGraphDef(&graph_def);
+      DumpGraphDefToFile("post_gpu_stage_subgraph_pass", graph_def);
+    }
+
     return Status::OK();
   }
 

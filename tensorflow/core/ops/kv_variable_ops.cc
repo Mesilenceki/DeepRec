@@ -457,7 +457,7 @@ REGISTER_OP("GroupVariableLookup")
         TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(num_lookups+i), 1, &temp));
         TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(2*num_lookups+i), 2, &temp));
         TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(3*num_lookups+i), 1, &temp));
-        TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(4*num_lookups+i), 1, &temp));
+        // TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(4*num_lookups+i), 1, &temp));
         ShapeHandle unused;
         TF_RETURN_IF_ERROR(ctx->WithRankAtLeast(ctx->input(i), 1, &unused));
         ShapeHandle params_subshape;

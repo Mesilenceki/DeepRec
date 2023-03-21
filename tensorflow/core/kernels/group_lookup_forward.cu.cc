@@ -73,9 +73,16 @@ __global__ void SetToIntMaxSTG128(const int batch_size, const int num_lookups,
 __global__ void CalcPerElementRowOffset(const int64_t nnz, const int64_t* indices,
                                         int* values_offset) {
   const int thread_offset = blockIdx.x * blockDim.x + threadIdx.x;
+  // const int int_max = 0x7fffffff;
   if (thread_offset < int(nnz)) {
     const int64_t element_row = indices[2 * thread_offset];
     atomicMin(values_offset + int(element_row), thread_offset);
+    // __syncthreads();
+    // volatile int* volatile_values_offset = values_offset;
+    // while (volatile_values_offset[thread_offset + 1] == int_max) {
+    // }
+    // const int compare = volatile_values_offset[thread_offset + 1];
+    // atomicMin((int *)volatile_values_offset + int(thread_offset), compare);
   }
 }
 
@@ -333,8 +340,7 @@ class GroupEmbeddingLookupForWard {
   }
 
   template <typename ForwardFn>
-  void compute(ForwardFn compute_fn, const int batch_size,
-               cudaStream_t stream) {
+  void compute(ForwardFn compute_fn, const int batch_size, cudaStream_t stream) {
     CK_CUDA_THROW_(cudaMemcpyAsync(d_args_, h_args_.data(),
                                    ev_nums_ * args_size_,
                                    cudaMemcpyHostToDevice, stream));
@@ -392,6 +398,50 @@ class GroupEmbeddingLookupForwardBaseOp : public OpKernel {
     OP_REQUIRES_OK(c, c->GetAttr("max_norm", &max_norm_));
     OP_REQUIRES_OK(c, c->GetAttr("ignore_weights", &ignore_weights_));
     lookuper_.initialize(num_lookups_, dimension_, max_norm_);
+  }
+
+  inline void Lookup(const bool is_ev, const int batch_size, cudaStream_t stream) { 
+    if (ignore_weights_) {
+      if (combiner_ == "mean") {
+        if (is_ev) {
+          lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Mean>, batch_size, stream);
+        } else {
+          lookuper_.compute(VariableComputeFn<TKey, TValue, Mean>, batch_size, stream);
+        }
+      } else if (this->combiner_ == "sum") {
+        if (is_ev) {
+          lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Sum>, batch_size, stream);
+        } else {
+          lookuper_.compute(VariableComputeFn<TKey, TValue, Sum>, batch_size, stream);
+        }
+      } else {
+        if (is_ev) {
+          lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Sqrtn>, batch_size, stream);
+        } else {
+          lookuper_.compute(VariableComputeFn<TKey, TValue, Sqrtn>, batch_size, stream);
+        }
+      }
+    } else {
+      if (combiner_ == "mean") {
+        if (is_ev) {
+          lookuper_.compute(WeightedEmbeddingVarComputeFn<TKey, TValue, Mean>, batch_size, stream);
+        } else {
+          lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, Mean>, batch_size, stream);
+        }
+      } else if (this->combiner_ == "sum") {
+        if (is_ev) {
+          lookuper_.compute(WeightedEmbeddingVarComputeFn<TKey, TValue, Sum>, batch_size, stream);
+        } else {
+          lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, Sum>, batch_size, stream);
+        }
+      } else {
+        if (is_ev) {
+          lookuper_.compute(WeightedEmbeddingVarComputeFn<TKey, TValue, Sqrtn>, batch_size, stream);
+        } else {
+          lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, Sqrtn>, batch_size, stream);
+        }
+      }
+    }
   }
 
  protected:
@@ -608,29 +658,30 @@ class GroupEmbeddingVarLookupOp
       tensor_list_.emplace_back(std::move(out_tensor));
     }
 
-    if (this->ignore_weights_) {
-      if (this->combiner_ == "mean") {
-        this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Mean>,
-                                batch_size, device.stream());
-      } else if (this->combiner_ == "sum") {
-        this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Sum>,
-                                batch_size, device.stream());
-      } else {
-        this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Sqrtn>,
-                                batch_size, device.stream());
-      }
-    } else {
-      if (this->combiner_ == "mean") {
-        this->lookuper_.compute(WeightedEmbeddingVarComputeFn<TKey, TValue, Mean>,
-                                batch_size, device.stream());
-      } else if (this->combiner_ == "sum") {
-        this->lookuper_.compute(WeightedEmbeddingVarComputeFn<TKey, TValue, Sum>,
-                                batch_size, device.stream());
-      } else {
-        this->lookuper_.compute(WeightedEmbeddingVarComputeFn<TKey, TValue, Sqrtn>,
-                                batch_size, device.stream());
-      }
-    }
+    this->Lookup(true, batch_size, device.stream());
+    // if (this->ignore_weights_) {
+    //   if (this->combiner_ == "mean") {
+    //     this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Mean>,
+    //                             batch_size, device.stream());
+    //   } else if (this->combiner_ == "sum") {
+    //     this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Sum>,
+    //                             batch_size, device.stream());
+    //   } else {
+    //     this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Sqrtn>,
+    //                             batch_size, device.stream());
+    //   }
+    // } else {
+    //   if (this->combiner_ == "mean") {
+    //     this->lookuper_.compute(WeightedEmbeddingVarComputeFn<TKey, TValue, Mean>,
+    //                             batch_size, device.stream());
+    //   } else if (this->combiner_ == "sum") {
+    //     this->lookuper_.compute(WeightedEmbeddingVarComputeFn<TKey, TValue, Sum>,
+    //                             batch_size, device.stream());
+    //   } else {
+    //     this->lookuper_.compute(WeightedEmbeddingVarComputeFn<TKey, TValue, Sqrtn>,
+    //                             batch_size, device.stream());
+    //   }
+    // }
     tensor_list_.clear();
   }
 
@@ -723,29 +774,31 @@ class GroupVariableLookupOp
           emb_row_size);
     }
 
-    if (this->ignore_weights_) {
-      if (this->combiner_ == "mean") {
-        this->lookuper_.compute(VariableComputeFn<TKey, TValue, Mean>, batch_size,
-                                stream);
-      } else if (this->combiner_ == "sum") {
-        this->lookuper_.compute(VariableComputeFn<TKey, TValue, Sum>, batch_size,
-                                stream);
-      } else {
-        this->lookuper_.compute(VariableComputeFn<TKey, TValue, Sqrtn>,
-                                batch_size, stream);
-      }
-    } else {
-      if (this->combiner_ == "mean") {
-        this->lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, Mean>, batch_size,
-                                stream);
-      } else if (this->combiner_ == "sum") {
-        this->lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, Sum>, batch_size,
-                                stream);
-      } else {
-        this->lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, Sqrtn>,
-                                batch_size, stream);
-      }
-    }
+    this->Lookup(false, batch_size, stream);
+
+    // if (this->ignore_weights_) {
+    //   if (this->combiner_ == "mean") {
+    //     this->lookuper_.compute(VariableComputeFn<TKey, TValue, Mean>, batch_size,
+    //                             stream);
+    //   } else if (this->combiner_ == "sum") {
+    //     this->lookuper_.compute(VariableComputeFn<TKey, TValue, Sum>, batch_size,
+    //                             stream);
+    //   } else {
+    //     this->lookuper_.compute(VariableComputeFn<TKey, TValue, Sqrtn>,
+    //                             batch_size, stream);
+    //   }
+    // } else {
+    //   if (this->combiner_ == "mean") {
+    //     this->lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, Mean>, batch_size,
+    //                             stream);
+    //   } else if (this->combiner_ == "sum") {
+    //     this->lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, Sum>, batch_size,
+    //                             stream);
+    //   } else {
+    //     this->lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, Sqrtn>,
+    //                             batch_size, stream);
+    //   }
+    // }
 
   }
 

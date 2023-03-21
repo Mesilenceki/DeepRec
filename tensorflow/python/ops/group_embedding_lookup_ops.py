@@ -32,7 +32,7 @@ def group_embedding_var_lookup(params,
     is_use_default_value_tensor = False
   if ignore_weights:
     sp_weight = ops.convert_to_tensor(1.0)
-    sp_weights = [sp_weight for _ in range(len(combiners))]
+    sp_weights = [sp_weight for _ in range(len(sp_values))]
   return gen_kv_variable_ops.group_embedding_var_lookup(params,
                                                         sp_values,
                                                         sp_indices,
@@ -84,6 +84,7 @@ def group_variable_lookup(params,
                           sp_weights,
                           combiners,
                           dimensions,
+                          ignore_weights,
                           default_id=None):
   if default_id is not None:
     default_value = default_id
@@ -94,7 +95,7 @@ def group_variable_lookup(params,
 
   if ignore_weights:
     sp_weight = ops.convert_to_tensor(1.0)
-    sp_weights = [sp_weight for _ in range(len(combiners))]
+    sp_weights = [sp_weight for _ in range(len(sp_values))]
     
   return gen_kv_variable_ops.group_variable_lookup(params,
                                                   sp_values,
