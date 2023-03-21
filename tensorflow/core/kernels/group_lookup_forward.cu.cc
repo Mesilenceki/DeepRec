@@ -44,6 +44,7 @@ template <typename TKey, typename TValue>
 struct GroupEmbeddingForWardArgs {
   TValue* emb_variable_;
   TValue* emb_vector_;
+  TValue* sp_weights_;
   TKey* sp_values_;
   int64_t* sp_indices_;
   int* offset_indices_;
@@ -90,6 +91,106 @@ __global__ void FillEmptyRow(const int64_t batch_size, const int num_lookups,
       }
       const int compare = values_offset[thread_offset + 1];
       atomicMin((int *)values_offset + int(thread_offset), compare);
+    }
+  }
+}
+
+template <typename TKey, typename TValue, Combiner combiner>
+__global__ void WeightedEmbeddingVarComputeFn(
+    const int batch_size, const int dimension, const float max_norm,
+    const int num_lookups, GroupEmbeddingForWardArgs<TKey, TValue>* args) {
+  __shared__ TValue l2_sum[1];
+
+  int bid = blockIdx.x;
+  int tid = threadIdx.x;
+
+  if (bid < batch_size && tid < dimension) {
+    for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
+      int value_offset = args[ev_id].offset_indices_[bid];
+      int feature_num;
+      if (bid == int(batch_size) - 1) {
+        feature_num = int(args[ev_id].nnz_) - value_offset;
+      } else {
+        feature_num = args[ev_id].offset_indices_[bid + 1] - value_offset;
+      }
+      TValue out = 0.0;
+
+// #pragma unroll
+      for (int j = 0; j < feature_num; ++j) {
+        int64_t feature_offset = (value_offset + j) * dimension;
+        TValue sum = args[ev_id].emb_variable_[feature_offset + tid];
+        TValue sp_weights = args[ev_id].sp_weights_[value_offset + j];
+        if (max_norm >= 0.0) {
+          if (tid == 0) {
+            l2_sum[0] = 0.0;
+          }
+          __syncthreads();
+          atomicAdd(l2_sum, sum * sum);
+          __syncthreads();
+          TValue l2_norm = sqrtf(l2_sum[0]);
+          if (l2_norm > max_norm) {
+            sum *= max_norm / l2_norm;
+          }
+        }
+        out += sum * sp_weights;
+      }
+
+      out = Combine<combiner>(out, feature_num);
+      args[ev_id].emb_vector_[bid * dimension + tid] = out;
+    }
+  }
+}
+
+template <typename TKey, typename TValue, Combiner combiner>
+__global__ void WeightedVariableComputeFn(
+    const int batch_size, const int emb_vec_size, const float max_norm,
+    const int num_lookups, GroupEmbeddingForWardArgs<TKey, TValue>* args) {
+  __shared__ TValue l2_sum[1];
+  int bid = blockIdx.x;
+  int tid = threadIdx.x;
+
+  if (bid < batch_size && tid < emb_vec_size) {
+    for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
+      int value_offset = args[ev_id].offset_indices_[bid];
+      int feature_num;
+      if (bid == int(batch_size) - 1) {
+        feature_num = int(args[ev_id].nnz_) - value_offset;
+      } else {
+        feature_num = args[ev_id].offset_indices_[bid + 1] - value_offset;
+      }
+
+      TValue out = 0.0f;
+
+      const TValue* emb_variable = args[ev_id].emb_variable_;
+      const int64_t emb_dim_limit = args[ev_id].emb_row_size_;
+// #pragma unroll
+      for (int i = 0; i < feature_num; i++) {
+        int64_t indices = int(args[ev_id].sp_values_[value_offset + i]);
+        TValue emb_element = 0.0;
+        TValue sp_weights = args[ev_id].sp_weights_[value_offset + i];
+        if (FastBoundsCheck(indices, emb_dim_limit)) {
+          emb_element = emb_variable[indices * emb_vec_size + tid];
+        }
+        if (max_norm >= 0.0f) {
+          // calc l2 norm of this emb row(per block) and compare with
+          // max_norm.
+          // if greater than max_norm, then clip every element with factor
+          // max_norm / l2norm
+          if (tid == 0) {
+            l2_sum[0] = 0.0f;
+          }
+          __syncthreads();
+          atomicAdd(l2_sum, emb_element * emb_element);
+          __syncthreads();
+          TValue l2_norm = sqrtf(l2_sum[0]);
+          if (l2_norm > max_norm) {
+            emb_element *= max_norm / l2_norm;
+          }
+        }
+        out += emb_element * sp_weights;
+      }
+      out = Combine<combiner>(out, feature_num);
+      args[ev_id].emb_vector_[bid * emb_vec_size + tid] = out;
     }
   }
 }
@@ -167,21 +268,21 @@ __global__ void VariableComputeFn(
         TValue emb_element = 0.0;
         if (FastBoundsCheck(indices, emb_dim_limit)) {
           emb_element = emb_variable[indices * emb_vec_size + tid];
-        }
-        if (max_norm >= 0.0f) {
-          // calc l2 norm of this emb row(per block) and compare with
-          // max_norm.
-          // if greater than max_norm, then clip every element with factor
-          // max_norm / l2norm
-          if (tid == 0) {
-            l2_sum[0] = 0.0f;
-          }
-          __syncthreads();
-          atomicAdd(l2_sum, emb_element * emb_element);
-          __syncthreads();
-          TValue l2_norm = sqrtf(l2_sum[0]);
-          if (l2_norm > max_norm) {
-            emb_element *= max_norm / l2_norm;
+          if (max_norm >= 0.0f) {
+            // calc l2 norm of this emb row(per block) and compare with
+            // max_norm.
+            // if greater than max_norm, then clip every element with factor
+            // max_norm / l2norm
+            if (tid == 0) {
+              l2_sum[0] = 0.0f;
+            }
+            __syncthreads();
+            atomicAdd(l2_sum, emb_element * emb_element);
+            __syncthreads();
+            TValue l2_norm = sqrtf(l2_sum[0]);
+            if (l2_norm > max_norm) {
+              emb_element *= max_norm / l2_norm;
+            }
           }
         }
         out += emb_element;
@@ -214,16 +315,19 @@ class GroupEmbeddingLookupForWard {
   }
 
   void set(int idx, TValue* emb_variable, TValue* emb_vector,
-           int* offset_indices, int nnz, int64_t* sp_indices = nullptr,
+           int* offset_indices, int nnz, TValue* sp_weights,
+           int64_t* sp_indices = nullptr,
            TKey* sp_values = nullptr, int emb_row_size = -1) {
     h_args_[idx].emb_variable_ = emb_variable;
     h_args_[idx].emb_vector_ = emb_vector;
     h_args_[idx].offset_indices_ = offset_indices;
     h_args_[idx].sp_indices_ = sp_indices;
     h_args_[idx].nnz_ = nnz;
+    h_args_[idx].sp_weights_ = sp_weights;
     h_args_[idx].sp_values_ = sp_values;
     h_args_[idx].emb_row_size_ = emb_row_size;
   }
+
   template <typename ForwardFn>
   void compute(ForwardFn compute_fn, const int batch_size,
                cudaStream_t stream) {
@@ -282,7 +386,52 @@ class GroupEmbeddingLookupForwardBaseOp : public OpKernel {
     OP_REQUIRES_OK(c, c->GetAttr("num_lookups", &num_lookups_));
     OP_REQUIRES_OK(c, c->GetAttr("dimension", &dimension_));
     OP_REQUIRES_OK(c, c->GetAttr("max_norm", &max_norm_));
+    OP_REQUIRES_OK(c, c->GetAttr("ignore_weights", &ignore_weights_));
     lookuper_.initialize(num_lookups_, dimension_, max_norm_);
+  }
+
+  inline void Lookup(const bool is_ev, const int batch_size, cudaStream_t stream) { 
+    if (ignore_weights_) {
+      if (combiner_ == "mean") {
+        if (is_ev) {
+          lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Mean>, batch_size, stream);
+        } else {
+          lookuper_.compute(VariableComputeFn<TKey, TValue, Mean>, batch_size, stream);
+        }
+      } else if (this->combiner_ == "sum") {
+        if (is_ev) {
+          lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Sum>, batch_size, stream);
+        } else {
+          lookuper_.compute(VariableComputeFn<TKey, TValue, Sum>, batch_size, stream);
+        }
+      } else {
+        if (is_ev) {
+          lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Sqrtn>, batch_size, stream);
+        } else {
+          lookuper_.compute(VariableComputeFn<TKey, TValue, Sqrtn>, batch_size, stream);
+        }
+      }
+    } else {
+      if (combiner_ == "mean") {
+        if (is_ev) {
+          lookuper_.compute(WeightedEmbeddingVarComputeFn<TKey, TValue, Mean>, batch_size, stream);
+        } else {
+          lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, Mean>, batch_size, stream);
+        }
+      } else if (this->combiner_ == "sum") {
+        if (is_ev) {
+          lookuper_.compute(WeightedEmbeddingVarComputeFn<TKey, TValue, Sum>, batch_size, stream);
+        } else {
+          lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, Sum>, batch_size, stream);
+        }
+      } else {
+        if (is_ev) {
+          lookuper_.compute(WeightedEmbeddingVarComputeFn<TKey, TValue, Sqrtn>, batch_size, stream);
+        } else {
+          lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, Sqrtn>, batch_size, stream);
+        }
+      }
+    }
   }
 
  protected:
@@ -291,6 +440,7 @@ class GroupEmbeddingLookupForwardBaseOp : public OpKernel {
   float max_norm_;
   int num_lookups_;
   int dimension_;
+  bool ignore_weights_;
 };
 
 template <typename TFKey, typename TKey, typename TValue>
@@ -341,7 +491,7 @@ class GroupEmbeddingVarLookupOp
       OP_REQUIRES_OK(ctx, LookupResource(ctx, HandleFromInput(ctx, i), &ev));
       core::ScopedUnref unref_me(ev);
       if (is_use_default_value_tensor_) {
-        default_v = (TValue *)ctx->input(4 * this->num_lookups_).data();
+        default_v = (TValue *)ctx->input(5 * this->num_lookups_).data();
       } else {
         default_v = ev->GetDefaultValuePtr();
       }
@@ -356,7 +506,7 @@ class GroupEmbeddingVarLookupOp
 
       if (ev->IsSingleHbm()) {
         if (is_use_default_value_tensor_) {
-          Tensor default_values(ctx->input(4 * this->num_lookups_));
+          Tensor default_values(ctx->input(5 * this->num_lookups_));
           auto default_value_num = default_values.NumElements() / dimension;
           auto default_values_matrix =
               default_values.shaped<TValue, 2>({default_value_num, dimension});
@@ -485,22 +635,22 @@ class GroupEmbeddingVarLookupOp
                                                values_offset_tensor_shape,
                                                &values_offset_tensor));
       auto values_offset = values_offset_tensor->flat<int>().data();
+      
+      TValue* sp_weights = nullptr;
+      if (!this->ignore_weights_) {
+        const Tensor &sp_weights_tensor = ctx->input(this->num_lookups_ * 4 + i);
+        sp_weights = const_cast<TValue*>(sp_weights_tensor.flat<TValue>().data());
+      }
+
       this->lookuper_.set(
-          i, out_base, op_output, values_offset, nnz,
+          i, out_base, op_output, values_offset, nnz, sp_weights,
           const_cast<int64_t *>(reinterpret_cast<const int64_t *>(sp_indices)));
+
       tensor_list_.emplace_back(out_tensor);
     }
 
-    if (this->combiner_ == "mean") {
-      this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Mean>,
-                              batch_size, device.stream());
-    } else if (this->combiner_ == "sum") {
-      this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Sum>,
-                              batch_size, device.stream());
-    } else {
-      this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, Sqrtn>,
-                              batch_size, device.stream());
-    }
+    this->Lookup(true, batch_size, device.stream());
+
     tensor_list_.clear();
   }
 
@@ -573,28 +723,26 @@ class GroupVariableLookupOp
                                                &values_offset_tensor));
       auto values_offset = values_offset_tensor->flat<int>().data();
 
+      TValue* sp_weights = nullptr;
+      if (!this->ignore_weights_) {
+        const Tensor &sp_weights_tensor = ctx->input(this->num_lookups_ * 4 + i);
+        sp_weights = const_cast<TValue*>(sp_weights_tensor.flat<TValue>().data());
+      }
+
       this->lookuper_.set(
           i,
           const_cast<TValue *>(reinterpret_cast<const TValue *>(
               emb_variable_tensor.flat<TValue>().data())),
-          emb_vectors, values_offset, nnz,
+          emb_vectors, values_offset, nnz, sp_weights,
           const_cast<int64_t *>(reinterpret_cast<const int64_t *>(
               sp_indices_tensor.flat<int64>().data())),
           const_cast<TKey *>(reinterpret_cast<const TKey *>(
               sp_values_tensor.flat<TFKey>().data())),
           emb_row_size);
+
     }
 
-    if (this->combiner_ == "mean") {
-      this->lookuper_.compute(VariableComputeFn<TKey, TValue, Mean>, batch_size,
-                              stream);
-    } else if (this->combiner_ == "sum") {
-      this->lookuper_.compute(VariableComputeFn<TKey, TValue, Sum>, batch_size,
-                              stream);
-    } else {
-      this->lookuper_.compute(VariableComputeFn<TKey, TValue, Sqrtn>,
-                              batch_size, stream);
-    }
+    this->Lookup(false, batch_size, stream);
   }
 
 };

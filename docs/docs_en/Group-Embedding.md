@@ -17,8 +17,8 @@ GroupEmbedding provides two levels of API.The one is `tf.nn.group_embedding_look
 def group_embedding_lookup_sparse(params,
                                   sp_ids,
                                   combiners,
-                                  partition_strategy="mod",
                                   sp_weights=None,
+                                  partition_strategy="mod",
                                   name=None):
 ```
 
@@ -26,7 +26,7 @@ def group_embedding_lookup_sparse(params,
 - `sp_ids` : List | Tuple , SparseTensor sp_ids ​​is the ID used for EmbeddingLookup, the length must be consistent with params.
 - `combiners` : List | Tuple，The pooling method of embedding values.Currently support `mean` and `sum`.
 - `partition_strategy` : str，Currently not supported.
-- `sp_weights` : List | Typle the weight of sp_ids values.(Currently not supported.)
+- `sp_weights` : List | Typle the weight of sp_ids values.
 - `name` : str group name
 
 **group_embedding_column_scope**

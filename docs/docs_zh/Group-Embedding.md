@@ -21,8 +21,8 @@ Group Embedding功能支持同时对多个EmbeddingVariable GPU聚合查询，Em
 def group_embedding_lookup_sparse(params,
                                   sp_ids,
                                   combiners,
-                                  partition_strategy="mod",
                                   sp_weights=None,
+                                  partition_strategy="mod",
                                   name=None):
 ```
 
@@ -30,7 +30,7 @@ def group_embedding_lookup_sparse(params,
 - `sp_ids` : List | Tuple , SparseTensor ，values是用于查找的ID 长度必须和params保持一致
 - `combiners` : List | Tuple 查找完得到的embedding tensor聚合的方式，支持 `mean` 和 `sum`
 - `partition_strategy` : str 目前暂时不支持
-- `sp_weights` : List | Typle sp_ids 的 values 的权重。(目前暂时不支持，后续会开放)
+- `sp_weights` : List | Typle sp_ids 的 values 的权重。
 - `name` : str group的名称
 
 **group_embedding_column_scope**

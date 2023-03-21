@@ -359,7 +359,9 @@ REGISTER_OP("GroupEmbeddingVarLookup")
     .Input("sp_values: num_lookups * Tkeys")
     .Input("sp_indices: num_lookups * int64")
     .Input("dense_shape: num_lookups * int64")
+    .Input("sp_weights: num_lookups * dtype")
     .Input("default_value: dtype")
+    .Attr("ignore_weights: bool = false")
     .Attr("is_use_default_value_tensor: bool = false")
     .Attr("combiner: {'sqrtn', 'mean', 'sum'}")
     .Attr("dimension: int")
@@ -434,6 +436,7 @@ REGISTER_OP("GroupVariableLookup")
     .Input("sp_values: num_lookups * Tkeys")
     .Input("sp_indices: num_lookups * int64")
     .Input("dense_shape: num_lookups * int64")
+    .Input("sp_weights: num_lookups * dtype")
     .Input("default_value: dtype")
     .Output("output: num_lookups * dtype")
     .Output("sp_values_offset: num_lookups * int32")
@@ -443,6 +446,7 @@ REGISTER_OP("GroupVariableLookup")
     .Attr("Tkeys: {int64, int32}")
     .Attr("max_norm: float = -1.0")
     .Attr("num_lookups: int >= 1")
+    .Attr("ignore_weights: bool = false")
     .Attr("is_use_default_value_tensor: bool = false")
     .SetShapeFn([](InferenceContext* ctx) {
       int num_lookups;
@@ -453,6 +457,7 @@ REGISTER_OP("GroupVariableLookup")
         TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(num_lookups+i), 1, &temp));
         TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(2*num_lookups+i), 2, &temp));
         TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(3*num_lookups+i), 1, &temp));
+        // TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(4*num_lookups+i), 1, &temp));
         ShapeHandle unused;
         TF_RETURN_IF_ERROR(ctx->WithRankAtLeast(ctx->input(i), 1, &unused));
         ShapeHandle params_subshape;
