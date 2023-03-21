@@ -1653,6 +1653,7 @@ def safe_adaptive_embedding_lookup_sparse(hash_embedding_weights,
 def group_embedding_lookup_sparse(params,
                                   sp_ids,
                                   combiners,
+                                  sp_weights=None,
                                   partition_strategy="mod",
                                   name=None):
   """
@@ -1672,7 +1673,6 @@ def group_embedding_lookup_sparse(params,
     emb_vec: list
             a list of tf.Tensor(the results of lookup).
   """
-  ##TODO(jqh): support calculate sp_weights in this API
   if combiners is None:
     logging.warn("The default value of combiner will change from \"mean\" "
                  "to \"sqrtn\" after 2016/11/01.")
@@ -1687,11 +1687,16 @@ def group_embedding_lookup_sparse(params,
     raise ValueError("params must be specified")
   if not isinstance(params, list):
     params = [params]
-  
+
+  ignore_weights = sp_weights is None
+
   if len(combiners) != len(sp_ids):
     raise ValueError("len of combiners must be equal to len of sp_ids")
   if len(combiners) != len(params):
     raise ValueError("len of combiners must be equal to len of params")
+  if not ignore_weights:
+    if len(combiners) != len(sp_weights):
+      raise ValueError("len of combiners must be equal to len of sp_weights")
 
   ## Currently not doing unique
   strategy = group_embedding_ops_utils.get_group_lookup_strategy()
@@ -1731,6 +1736,17 @@ def group_embedding_lookup_sparse(params,
         except:  
           raise ValueError("sp_id is neither SparseTensor nor RaggedTensor!")
 
+      if not ignore_weights:
+        sp_weight = sp_weights[index]
+        if sp_weight is not None:
+          if not isinstance(sp_weight, sparse_tensor.SparseTensor):
+            raise TypeError("sp_weights must be either None or SparseTensor")
+          sp_id.values.get_shape().assert_is_compatible_with(
+            sp_weight.values.get_shape())
+          sp_id.indices.get_shape().assert_is_compatible_with(
+              sp_weight.indices.get_shape())
+          sp_id.dense_shape.get_shape().assert_is_compatible_with(
+              sp_weight.dense_shape.get_shape())
 
       if isinstance(param, kv_variable_ops.EmbeddingVariable):
         is_ev_list[index] = True
@@ -1748,6 +1764,7 @@ def group_embedding_lookup_sparse(params,
       ev_sp_values = [[] for _ in range(ev_group_id)]
       ev_sp_indices = [[] for _ in range(ev_group_id)]
       ev_sp_dense_shape = [[] for _ in range(ev_group_id)]
+      ev_sp_weights = [[] for _ in range(ev_group_id)]
       ev_handlers = [[] for _ in range(ev_group_id)]
       ev_dimensions = [0 for _ in range(ev_group_id)]
       ev_combiners = ["mean" for _ in range(ev_group_id)]
@@ -1762,7 +1779,7 @@ def group_embedding_lookup_sparse(params,
         sp_id = sp_ids[index]
         batch_size = math_ops.cast(sp_id.dense_shape[0], dtype=dtypes.int32)
         combiner = combiners[index]
-
+        
         ev_combiners[group_id] = combiner
         ev_dimensions[group_id] = dim
         ev_handlers[group_id].append(param.handle)
@@ -1770,7 +1787,11 @@ def group_embedding_lookup_sparse(params,
         ev_sp_indices[group_id].append(sp_id.indices)
         ev_sp_dense_shape[group_id].append(sp_id.dense_shape)
         output_index_list[group_id].append(params_idx_map[param])
-      
+
+        if not ignore_weights:
+          sp_weight = sp_weights[index]
+          ev_sp_weights[group_id].append(sp_weight.values)
+
       for group_id in range(ev_group_id):
         dim = ev_dimensions[group_id]
         output_index = output_index_list[group_id]
@@ -1780,8 +1801,10 @@ def group_embedding_lookup_sparse(params,
                                                                           ev_sp_values[group_id],
                                                                           ev_sp_indices[group_id],
                                                                           ev_sp_dense_shape[group_id],
+                                                                          ev_sp_weights[group_id],
                                                                           ev_combiners[group_id],
-                                                                          dim)[0]
+                                                                          dim,
+                                                                          ignore_weights)[0]
           for idx, output in zip(output_index, outputs):
             emb_vec[idx] = output
     
@@ -1789,6 +1812,7 @@ def group_embedding_lookup_sparse(params,
       tf_sp_values = [[] for _ in range(tf_group_id)]
       tf_sp_indices = [[] for _ in range(tf_group_id)]
       tf_sp_dense_shape = [[] for _ in range(tf_group_id)]
+      tf_sp_weights = [[] for _ in range(tf_group_id)]
       tf_handlers = [[] for _ in range(tf_group_id)]
       tf_dimensions = [0 for _ in range(tf_group_id)]
       tf_combiners = ["mean" for _ in range(tf_group_id)]
@@ -1810,7 +1834,11 @@ def group_embedding_lookup_sparse(params,
         tf_sp_indices[group_id].append(sp_id.indices)
         tf_sp_dense_shape[group_id].append(sp_id.dense_shape)
         output_index_list[group_id].append(params_idx_map[param])
-      
+
+        if not ignore_weights:
+          sp_weight = sp_weights[index]
+          tf_sp_weights[group_id].append(sp_weight.values)
+
       for group_id in range(tf_group_id):
         dim = tf_dimensions[group_id]
         output_index = output_index_list[group_id]
@@ -1820,8 +1848,10 @@ def group_embedding_lookup_sparse(params,
                                                                       tf_sp_values[group_id],
                                                                       tf_sp_indices[group_id],
                                                                       tf_sp_dense_shape[group_id],
+                                                                      tf_sp_weights[group_id],
                                                                       tf_combiners[group_id],
-                                                                      dim)[0]
+                                                                      dim,
+                                                                      ignore_weights)[0]
           for idx, output in zip(output_index, outputs):
             emb_vec[idx] = output
                                                                 
