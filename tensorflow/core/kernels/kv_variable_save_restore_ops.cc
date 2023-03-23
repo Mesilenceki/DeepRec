@@ -386,11 +386,22 @@ class KvResourceImportV3Op: public AsyncOpKernel {
           LoadSsdData(ev, ssd_record_file_name, ssd_emb_file_name);
         }
       }
-      const Device& device = context->eigen_device<Device>();
-      EVRestoreDynamically(
-          ev, name_string, partition_id_, partition_num_, context, &reader,
-          "-partition_offset", "-keys", "-values", "-versions", "-freqs",
-          reset_version_, (Eigen::GpuDevice*)(&device));
+      if (ev->IsSingleHbm()) {
+        //Currently HBM should be placed on GPU.
+#if GOOGLE_CUDA
+        const Eigen::GpuDevice& device = context->eigen_gpu_device();
+        EVRestoreDynamically(
+            ev, name_string, partition_id_, partition_num_, context, &reader,
+            "-partition_offset", "-keys", "-values", "-versions", "-freqs",
+            reset_version_, &device);
+#endif
+      } else {
+        EVRestoreDynamically(
+            ev, name_string, partition_id_, partition_num_, context, &reader,
+            "-partition_offset", "-keys", "-values", "-versions", "-freqs",
+            reset_version_, nullptr);
+      }
+      
       ev->SetInitialized();
       done();
     };
