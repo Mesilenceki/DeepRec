@@ -356,7 +356,8 @@ Produces an output tensor with shape `indices.shape + params.shape[1:]` where:
 
 REGISTER_OP("GroupEmbeddingVarLookup")
     .Input("resource: num_lookups * resource")
-    .Input("sp_values: num_lookups * Tkeys")
+    .Input("unique_values: num_lookups * Tkeys")
+    .Input("unique_idx: num_lookups * TIndices")
     .Input("sp_indices: num_lookups * int64")
     .Input("dense_shape: num_lookups * int64")
     .Input("sp_weights: num_lookups * dtype")
@@ -369,6 +370,7 @@ REGISTER_OP("GroupEmbeddingVarLookup")
     .Output("sp_values_offset: num_lookups * int32")
     .Attr("dtype: type")
     .Attr("Tkeys: {int64, int32}")
+    .Attr("TIndices: {int64, int32}")
     .Attr("max_norm: float = -1.0")
     .Attr("num_lookups: int >= 1")
     .SetShapeFn([](InferenceContext* c) {
@@ -433,7 +435,8 @@ REGISTER_OP("MultiKvResourceGatherGrad")
 
 REGISTER_OP("GroupVariableLookup")
     .Input("emb_variables: num_lookups * dtype")
-    .Input("sp_values: num_lookups * Tkeys")
+    .Input("unique_values: num_lookups * Tkeys")
+    .Input("unique_idx: num_lookups * TIndices")
     .Input("sp_indices: num_lookups * int64")
     .Input("dense_shape: num_lookups * int64")
     .Input("sp_weights: num_lookups * dtype")
@@ -444,6 +447,7 @@ REGISTER_OP("GroupVariableLookup")
     .Attr("dimension: int")
     .Attr("dtype: type")
     .Attr("Tkeys: {int64, int32}")
+    .Attr("TIndices: {int64, int32}")
     .Attr("max_norm: float = -1.0")
     .Attr("num_lookups: int >= 1")
     .Attr("ignore_weights: bool = false")
@@ -455,8 +459,8 @@ REGISTER_OP("GroupVariableLookup")
       for (int i = 0; i < num_lookups; ++i) {
         ShapeHandle temp;
         TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(num_lookups+i), 1, &temp));
-        TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(2*num_lookups+i), 2, &temp));
-        TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(3*num_lookups+i), 1, &temp));
+        TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(2*num_lookups+i), 1, &temp));
+        TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(3*num_lookups+i), 2, &temp));
         // TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(4*num_lookups+i), 1, &temp));
         ShapeHandle unused;
         TF_RETURN_IF_ERROR(ctx->WithRankAtLeast(ctx->input(i), 1, &unused));

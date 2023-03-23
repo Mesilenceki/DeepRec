@@ -9014,6 +9014,7 @@ tf_kernel_library(
             "task_runner.h",],
     gpu_srcs = [
         "unique_ali_op_gpu.cu.cc",
+        #"group_unique_ali_op_gpu.cu.cc",
     ],
     copts = tf_copts(),
     deps = ARRAY_DEPS + [

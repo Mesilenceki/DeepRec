@@ -1795,10 +1795,16 @@ def group_embedding_lookup_sparse(params,
       for group_id in range(ev_group_id):
         dim = ev_dimensions[group_id]
         output_index = output_index_list[group_id]
+        unique_values = list()
+        unique_idx = list()
+        for sp_value in ev_sp_values[group_id]:
+          value, idx = array_ops.unique(sp_value)
+          unique_values.append(value)
+          unique_idx.append(idx)
         with ops.name_scope(name, "localized_group_embedding_lookup_ev_dim{}".format(dim),
                             params + sp_ids) as name_scope:
           outputs = group_embedding_lookup_ops.group_embedding_var_lookup(ev_handlers[group_id],
-                                                                          ev_sp_values[group_id],
+                                                                          unique_values, unique_idx,
                                                                           ev_sp_indices[group_id],
                                                                           ev_sp_dense_shape[group_id],
                                                                           ev_sp_weights[group_id],
@@ -1842,10 +1848,16 @@ def group_embedding_lookup_sparse(params,
       for group_id in range(tf_group_id):
         dim = tf_dimensions[group_id]
         output_index = output_index_list[group_id]
+        unique_values = list()
+        unique_idx = list()
+        for sp_value in tf_sp_values[group_id]:
+          value, idx = array_ops.unique(sp_value)
+          unique_values.append(value)
+          unique_idx.append(idx)
         with ops.name_scope(name, "localized_group_embedding_lookup_variable_dim{}".format(dim),
                             params + sp_ids) as name_scope:
           outputs = group_embedding_lookup_ops.group_variable_lookup(tf_handlers[group_id],
-                                                                      tf_sp_values[group_id],
+                                                                      unique_values, unique_idx,
                                                                       tf_sp_indices[group_id],
                                                                       tf_sp_dense_shape[group_id],
                                                                       tf_sp_weights[group_id],
