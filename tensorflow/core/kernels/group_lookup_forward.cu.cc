@@ -176,7 +176,7 @@ __global__ void EmbeddingVarComputeFn(
       //   // max_norm.
       //   // if greater than max_norm, then clip every element with factor
       //   // max_norm / l2norm
-      //   if (tid == 0) {
+      //   if (tid == 0) { 
       //     l2_sum[0] = 0.0f;
       //   }
       //   __syncthreads();
@@ -657,33 +657,17 @@ class GroupVariableLookupOp
                                              {unique_nnz * emb_vec_size}, &out_tensor));
       TValue* out_base = out_tensor.flat<TValue>().data();
       tensor_list_.emplace_back(out_tensor);
+
       dim3 grid_size{65536 / 1024, 1};
       dim3 block_size{1024ul, 1};
-
       VariableComputeFn<<<grid_size, block_size, 0 , stream>>>(
           unique_nnz, emb_vec_size, emb_row_size, key_base ,
           reinterpret_cast<const TValue *>(
             emb_variable_tensor.flat<TValue>().data()), out_base);
-      /* 
-      auto d_indices = unique_indices_tensor.flat<TIndice>().data();
-      TIndice* h_value = new TIndice[unique_indices_tensor.NumElements()];
-      cudaMemcpy(h_value, d_indices, sizeof(TIndice) * unique_indices_tensor.NumElements(), 
-          cudaMemcpyDeviceToHost);
-      for (int t = 0 ; t < unique_indices_tensor.NumElements(); ++t) {
-        std::cout << h_value[t] << "++\n";
-      }
-      std::cout << " ================= " << std::endl;
-      auto d_sp_indices = const_cast<int64_t *>(reinterpret_cast<const int64_t *>(
-              sp_indices_tensor.flat<int64>().data()));
-      TValue* h_sp_value = new TValue[unique_nnz * emb_vec_size];
-      cudaMemcpy(h_sp_value, out_base, sizeof(TValue) * unique_nnz * emb_vec_size, 
-          cudaMemcpyDeviceToHost);
-      for (int t = 0 ; t < unique_nnz * emb_vec_size; ++t) {
-        std::cout << h_sp_value[t] << "=====\n";
-      }*/
 
       TensorShape emb_vectors_tensor_shape = TensorShape(std::vector<int64>(
           {static_cast<long long>(batch_size), emb_vec_size}));
+
       Tensor* emb_vectors_tensor = nullptr;
       // allocate output
       OP_REQUIRES_OK(ctx, ctx->allocate_output(i, emb_vectors_tensor_shape,

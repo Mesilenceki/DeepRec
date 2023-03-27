@@ -114,9 +114,9 @@ def group_variable_lookup(params,
 @ops.RegisterGradient("GroupVariableLookup")
 def _GroupEmbeddingLookup(op, *grads):
   ev_num = op.get_attr("num_lookups")
-  return_grads = []
   combiner = op.get_attr("combiner")
   dimension = op.get_attr("dimension")
+  return_grads = []
   params = op.inputs[:ev_num]
   sp_values = op.inputs[ev_num:2*ev_num]
   sp_indices = op.inputs[ev_num*3: ev_num*4]
@@ -133,13 +133,13 @@ def _GroupEmbeddingLookup(op, *grads):
     with ops.colocate_with(params):
       params_shape = array_ops.shape(params, out_type=ops.dtypes.int64)
       params_shape = math_ops.cast(params_shape, dtypes.int32)
-    indice = op.inputs[ev_num+i]
+    unique_indice = op.inputs[ev_num*2+i]
     grad = tmp_grads[i]
-    size = array_ops.expand_dims(array_ops.size(indice), 0)
+    size = array_ops.expand_dims(array_ops.size(unique_indice), 0)
     values_shape = array_ops.concat([size, params_shape[1:]], 0)
     grad = array_ops.reshape(grad, values_shape)
-    indice = array_ops.reshape(indice, size)
-    return_grads.append(ops.IndexedSlices(grad, indice, params_shape))
+    unique_indice = array_ops.reshape(unique_indice, size)
+    return_grads.append(ops.IndexedSlices(grad, unique_indice, params_shape))
   for _ in range(ev_num*5+1):
     return_grads.append(None)
   return return_grads
