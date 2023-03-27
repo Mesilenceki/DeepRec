@@ -1784,7 +1784,7 @@ def group_embedding_lookup_sparse(params,
         ev_dimensions[group_id] = dim
         ev_handlers[group_id].append(param.handle)
         ev_sp_values[group_id].append(sp_id.values)
-        ev_sp_indices[group_id].append(sp_id.indices)
+        ev_sp_indices[group_id].append(sp_id.indices[:, 0])
         ev_sp_dense_shape[group_id].append(sp_id.dense_shape)
         output_index_list[group_id].append(params_idx_map[param])
 
@@ -1837,7 +1837,7 @@ def group_embedding_lookup_sparse(params,
         tf_dimensions[group_id] = dim
         tf_handlers[group_id].append(param)
         tf_sp_values[group_id].append(sp_id.values)
-        tf_sp_indices[group_id].append(sp_id.indices)
+        tf_sp_indices[group_id].append(sp_id.indices[:, 0])
         tf_sp_dense_shape[group_id].append(sp_id.dense_shape)
         output_index_list[group_id].append(params_idx_map[param])
 

@@ -46,58 +46,13 @@ struct GroupEmbeddingForWardArgs {
   TValue* emb_vector_;
   TValue* sp_weights_;
   TIndice* unique_indices_;
-  TKey* unique_values_;
   int64_t* sp_indices_;
   int* offset_indices_;
-  int unique_nnz_;
   int origin_nnz_;
-  int emb_row_size_;
 };
 
-template <typename TKey, typename TValue, typename TIndice>
-__global__ void SetToIntMaxSTG128(const int batch_size, const int num_lookups,
-                                  GroupEmbeddingForWardArgs<TKey, TValue, TIndice>* args) {
-  const int thread_offset = 4 * (blockIdx.x * blockDim.x + threadIdx.x);
-  const int int_max = 0x7fffffff;
-  for (int idx = 0; idx < num_lookups; ++idx) {
-    int* values_offset = args[idx].offset_indices_;
-    if (thread_offset + 4 < batch_size) {
-      int4 four = make_int4(int_max, int_max, int_max, int_max);
-      *((int4 *)(values_offset + thread_offset)) = four;
-    } else if (thread_offset < batch_size) {
-      for (int i = thread_offset; i < batch_size; i++) {
-        values_offset[i] = int_max;
-      }
-    }
-  }
-}
-
-__global__ void CalcPerElementRowOffset(const int64_t nnz, const int64_t* indices,
-                                        int* values_offset) {
-  const int thread_offset = blockIdx.x * blockDim.x + threadIdx.x;
-  if (thread_offset < int(nnz)) {
-    const int64_t element_row = indices[2 * thread_offset];
-    atomicMin(values_offset + int(element_row), thread_offset);
-  }
-}
-
-template <typename TKey, typename TValue, typename TIndice>
-__global__ void FillEmptyRow(const int64_t batch_size, const int num_lookups,
-                             GroupEmbeddingForWardArgs<TKey, TValue, TIndice>* args) {
-  const int thread_offset = blockIdx.x * blockDim.x + threadIdx.x;
-  const int int_max = 0x7fffffff;
-  if (thread_offset < int(batch_size - 1)) {
-    for (int i = 0; i < num_lookups; ++i) {
-      volatile int* values_offset = args[i].offset_indices_;
-      while (values_offset[thread_offset + 1] == int_max) {
-      }
-      const int compare = values_offset[thread_offset + 1];
-      atomicMin((int *)values_offset + int(thread_offset), compare);
-    }
-  }
-}
-
-template <typename TKey, typename TValue, typename TIndice, Combiner combiner>
+/*
+template <typename TKey, typename TValue, Combiner combiner>
 __global__ void WeightedEmbeddingVarComputeFn(
     const int batch_size, const int dimension, const float max_norm,
     const int num_lookups, GroupEmbeddingForWardArgs<TKey, TValue, TIndice>* args) {
@@ -141,58 +96,57 @@ __global__ void WeightedEmbeddingVarComputeFn(
       args[ev_id].emb_vector_[bid * dimension + tid] = out;
     }
   }
-}
+}*/
 
 template <typename TKey, typename TValue, typename TIndice, Combiner combiner>
 __global__ void WeightedVariableComputeFn(
     const int batch_size, const int emb_vec_size, const float max_norm,
-    const int num_lookups, GroupEmbeddingForWardArgs<TKey, TValue, TIndice>* args) {
-  __shared__ TValue l2_sum[1];
-  int bid = blockIdx.x;
-  int tid = threadIdx.x;
+    const int num_lookups, TValue* default_value, GroupEmbeddingForWardArgs<TKey, TValue, TIndice>* args) {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  
+  for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
+    if (tid < args[ev_id].origin_nnz_) {
+      int dst = args[ev_id].sp_indices_[tid];
+      int* d_offset = args[ev_id].offset_indices_ + dst;
+      atomicAdd(d_offset, 1);
+      TIndice src = args[ev_id].unique_indices_[tid];
+//      TValue weight = args[ev_id].sp_weights_[tid];
+      for (int d = 0; d < emb_vec_size; ++d) {
+        TValue accu = args[ev_id].emb_variable_[src + d];
+        TValue* output = args[ev_id].emb_vector_ + dst + d;
+        atomicAdd(output, accu);
+      }
 
-  if (bid < batch_size && tid < emb_vec_size) {
-    for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
-      int value_offset = args[ev_id].offset_indices_[bid];
-      int feature_num;
-      if (bid == int(batch_size) - 1) {
-        feature_num = int(args[ev_id].nnz_) - value_offset;
+      // if (max_norm >= 0.0f) {
+      //   // calc l2 norm of this emb row(per block) and compare with
+      //   // max_norm.
+      //   // if greater than max_norm, then clip every element with factor
+      //   // max_norm / l2norm
+      //   if (tid == 0) {
+      //     l2_sum[0] = 0.0f;
+      //   }
+      //   __syncthreads();
+      //   atomicAdd(l2_sum, emb_element * emb_element);
+      //   __syncthreads();
+      //   TValue l2_norm = sqrtf(l2_sum[0]);
+      //   if (l2_norm > max_norm) {
+      //     emb_element *= max_norm / l2_norm;
+      //   }
+      // }
+    }
+    __syncthreads();
+    if (tid < batch_size) {
+      int feature_num = args[ev_id].offset_indices_[tid];
+      if (feature_num > 0) {
+        for (int d = 0; d < emb_vec_size; ++d) {
+          TValue out = args[ev_id].emb_vector_[tid * emb_vec_size + d];
+	        args[ev_id].emb_vector_[tid * emb_vec_size + d] = Combine<combiner>(out, feature_num);
+        }
       } else {
-        feature_num = args[ev_id].offset_indices_[bid + 1] - value_offset;
-      }
-
-      TValue out = 0.0f;
-
-      const TValue* emb_variable = args[ev_id].emb_variable_;
-      const int64_t emb_dim_limit = args[ev_id].emb_row_size_;
-// #pragma unroll
-      for (int i = 0; i < feature_num; i++) {
-        int64_t indices = int(args[ev_id].sp_values_[value_offset + i]);
-        TValue emb_element = 0.0;
-        TValue sp_weights = args[ev_id].sp_weights_[value_offset + i];
-        if (FastBoundsCheck(indices, emb_dim_limit)) {
-          emb_element = emb_variable[indices * emb_vec_size + tid];
+        for (int d = 0; d < emb_vec_size; ++d) {
+          args[ev_id].emb_vector_[tid * emb_vec_size + d] = default_value[d];
         }
-        if (max_norm >= 0.0f) {
-          // calc l2 norm of this emb row(per block) and compare with
-          // max_norm.
-          // if greater than max_norm, then clip every element with factor
-          // max_norm / l2norm
-          if (tid == 0) {
-            l2_sum[0] = 0.0f;
-          }
-          __syncthreads();
-          atomicAdd(l2_sum, emb_element * emb_element);
-          __syncthreads();
-          TValue l2_norm = sqrtf(l2_sum[0]);
-          if (l2_norm > max_norm) {
-            emb_element *= max_norm / l2_norm;
-          }
-        }
-        out += emb_element * sp_weights;
       }
-      out = Combine<combiner>(out, feature_num);
-      args[ev_id].emb_vector_[bid * emb_vec_size + tid] = out;
     }
   }
 }
@@ -200,108 +154,73 @@ __global__ void WeightedVariableComputeFn(
 template <typename TKey, typename TValue, typename TIndice, Combiner combiner>
 __global__ void EmbeddingVarComputeFn(
     const int batch_size, const int dimension, const float max_norm,
-    const int num_lookups, GroupEmbeddingForWardArgs<TKey, TValue, TIndice>* args) {
-  __shared__ TValue l2_sum[1];
-
-  int bid = blockIdx.x;
-  int tid = threadIdx.x;
-
-  if (bid < batch_size && tid < dimension) {
-    for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
-      int value_offset = args[ev_id].offset_indices_[bid];
-      int feature_num;
-      if (bid == int(batch_size) - 1) {
-        feature_num = int(args[ev_id].nnz_) - value_offset;
-      } else {
-        feature_num = args[ev_id].offset_indices_[bid + 1] - value_offset;
+    const int num_lookups, TValue* default_value, GroupEmbeddingForWardArgs<TKey, TValue, TIndice>* args) {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  
+  for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
+    if (tid < args[ev_id].origin_nnz_) {
+      int dst = args[ev_id].sp_indices_[tid];
+      int* d_offset = args[ev_id].offset_indices_ + dst;
+      atomicAdd(d_offset, 1);
+      TIndice src = args[ev_id].unique_indices_[tid];
+//      TValue weight = args[ev_id].sp_weights_[tid];
+      //printf("dst addrs is %d src addrs is %d\n", dst, src);
+      for (int d = 0; d < dimension; ++d) {
+        TValue accu = args[ev_id].emb_variable_[src + d];
+        TValue* output = args[ev_id].emb_vector_ + dst + d;
+        atomicAdd(output, accu);
       }
-      TValue out = 0.0;
 
-// #pragma unroll
-      for (int j = 0; j < feature_num; ++j) {
-        int64_t feature_offset = (value_offset + j) * dimension;
-        TValue sum = args[ev_id].emb_variable_[feature_offset + tid];
-        if (max_norm >= 0.0) {
-          if (tid == 0) {
-            l2_sum[0] = 0.0;
-          }
-          __syncthreads();
-          atomicAdd(l2_sum, sum * sum);
-          __syncthreads();
-          TValue l2_norm = sqrtf(l2_sum[0]);
-          if (l2_norm > max_norm) {
-            sum *= max_norm / l2_norm;
-          }
+      // if (max_norm >= 0.0f) {
+      //   // calc l2 norm of this emb row(per block) and compare with
+      //   // max_norm.
+      //   // if greater than max_norm, then clip every element with factor
+      //   // max_norm / l2norm
+      //   if (tid == 0) {
+      //     l2_sum[0] = 0.0f;
+      //   }
+      //   __syncthreads();
+      //   atomicAdd(l2_sum, emb_element * emb_element);
+      //   __syncthreads();
+      //   TValue l2_norm = sqrtf(l2_sum[0]);
+      //   if (l2_norm > max_norm) {
+      //     emb_element *= max_norm / l2_norm;
+      //   }
+      // }
+    }
+    __syncthreads();
+    if (tid < batch_size) {
+      int feature_num = args[ev_id].offset_indices_[tid];
+      if (feature_num > 0) {
+        for (int d = 0; d < dimension; ++d) {
+          TValue out = args[ev_id].emb_vector_[tid * dimension + d];
+	  args[ev_id].emb_vector_[tid * dimension + d] = Combine<combiner>(out, feature_num);
         }
-        out += sum;
+      } else {
+        for (int d = 0; d < dimension; ++d) {
+          args[ev_id].emb_vector_[tid * dimension + d] = default_value[d];
+        }
       }
-
-      out = Combine<combiner>(out, feature_num);
-      args[ev_id].emb_vector_[bid * dimension + tid] = out;
     }
   }
 }
 
-template <typename TKey, typename TValue, typename TIndice, Combiner combiner>
+template <typename TKey, typename TValue>
 __global__ void VariableComputeFn(
-    const int batch_size, const int emb_vec_size, const float max_norm,
-    const int num_lookups, GroupEmbeddingForWardArgs<TKey, TValue, TIndice>* args) {
-  __shared__ TValue l2_sum[1];
-  int tid = blockIdx.x * blockDim.x + threadIdx.x;
-  int ev_id = blockIdx.y;
+    const int unique_nnz, const int emb_vec_size, const int64_t emb_dim_limit,
+    const TKey* keys, const TValue* embeddings, TValue* outputs) {
 
-  if (tid < args[ev_id].unique_nnz_) {
-    int indices = args[ev_id].unique_values_[tid];
-    const TValue* emb_variable = args[ev_id].emb_variable_;
-    const int64_t emb_dim_limit = args[ev_id].emb_row_size_;
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (tid < unique_nnz) {
+    int indices = keys[tid];
     TValue emb_out = 0.0;
     if (FastBoundsCheck(indices, emb_dim_limit)) {
+#pragma unroll
       for (int d = 0; d < emb_vec_size; ++d) {
-        emb_out = emb_variable[indices * emb_vec_size + d];
-      }
-        
-    }
-
-    for (int ev_id = 0; ev_id < num_lookups; ++ev_id) {
-      int value_offset = args[ev_id].offset_indices_[bid];
-      int feature_num;
-      if (bid == int(batch_size) - 1) {
-        feature_num = int(args[ev_id].nnz_) - value_offset;
-      } else {
-        feature_num = args[ev_id].offset_indices_[bid + 1] - value_offset;
-      }
-
-      TValue out = 0.0f;
-
-      const TValue* emb_variable = args[ev_id].emb_variable_;
-      const int64_t emb_dim_limit = args[ev_id].emb_row_size_;
-// #pragma unroll
-      for (int i = 0; i < feature_num; i++) {
-        int64_t indices = int(args[ev_id].sp_values_[value_offset + i]);
-        TValue emb_element = 0.0;
-        if (FastBoundsCheck(indices, emb_dim_limit)) {
-          emb_element = emb_variable[indices * emb_vec_size + tid];
-          if (max_norm >= 0.0f) {
-            // calc l2 norm of this emb row(per block) and compare with
-            // max_norm.
-            // if greater than max_norm, then clip every element with factor
-            // max_norm / l2norm
-            if (tid == 0) {
-              l2_sum[0] = 0.0f;
-            }
-            __syncthreads();
-            atomicAdd(l2_sum, emb_element * emb_element);
-            __syncthreads();
-            TValue l2_norm = sqrtf(l2_sum[0]);
-            if (l2_norm > max_norm) {
-              emb_element *= max_norm / l2_norm;
-            }
-          }
-        }
-        out += emb_element;
-      }
-      out = Combine<combiner>(out, feature_num);
-      args[ev_id].emb_vector_[bid * emb_vec_size + tid] = out;
+        emb_out = embeddings[indices * emb_vec_size + d];
+        outputs[tid * emb_vec_size + d] = emb_out;
+      }   
     }
   }
 }
@@ -328,56 +247,32 @@ class GroupEmbeddingLookupForWard {
   }
 
   void set(int idx, TValue* emb_variable, TValue* emb_vector,
-           int* offset_indices, int unique_nnz, int origin_nnz, TValue* sp_weights,
-           TIndice* unique_indices, int64_t* sp_indices = nullptr,
-           TKey* unique_values = nullptr, int emb_row_size = -1) {
+           int* offset_indices, int origin_nnz, TValue* sp_weights,
+           TIndice* unique_indices, int64_t* sp_indices) {
     h_args_[idx].emb_variable_ = emb_variable;
     h_args_[idx].emb_vector_ = emb_vector;
     h_args_[idx].offset_indices_ = offset_indices;
     h_args_[idx].sp_indices_ = sp_indices;
-    h_args_[idx].unique_nnz_ = unique_nnz;
     h_args_[idx].origin_nnz_ = origin_nnz;
     h_args_[idx].sp_weights_ = sp_weights;
     h_args_[idx].unique_indices_ = unique_indices;
-    h_args_[idx].unique_values_ = unique_values;
-    h_args_[idx].emb_row_size_ = emb_row_size;
   }
 
   template <typename ForwardFn>
-  void compute(ForwardFn compute_fn, const int batch_size,
+  void compute(ForwardFn compute_fn, TValue* default_value, const int batch_size,
                cudaStream_t stream) {
     CK_CUDA_THROW_(cudaMemcpyAsync(d_args_, h_args_.data(),
                                    ev_nums_ * args_size_,
                                    cudaMemcpyHostToDevice, stream));
 
-    {
-      constexpr int threads = 1024;
-      int blocks = batch_size / threads;
-      blocks = batch_size % threads == 0 ? blocks : blocks + 1;
-      SetToIntMaxSTG128<<<blocks, threads, 0, stream>>>(
-          int(batch_size), ev_nums_, d_args_);
-
-      for (int i = 0; i < ev_nums_; ++i) {
-        int &nnz = h_args_[i].nnz_;
-        int blocks = nnz % threads == 0 ? (nnz / threads) : (nnz / threads + 1);
-        CalcPerElementRowOffset<<<blocks, threads, 0, stream>>>(
-            nnz, h_args_[i].sp_indices_, h_args_[i].offset_indices_);
-      }
-
-      blocks = batch_size % threads == 0 ? (batch_size / threads)
-                                         : (batch_size / threads + 1);
-
-      FillEmptyRow<<<blocks, threads, 0, stream>>>(batch_size, ev_nums_, d_args_);
-    }
-
     CK_CUDA_THROW_(cudaStreamSynchronize(stream));
 
     {
       // TODO: double check why mapped 2D grid slower
-      dim3 grid_size{65536 / threads / ev_nums_, ev_nums_};
       const int threads = 1024ul;
+      dim3 grid_size{65536/threads, 1};
       compute_fn<<<grid_size, threads, 0, stream>>>(
-          batch_size, dimension_, max_norm_, ev_nums_, d_args_);
+          batch_size, dimension_, max_norm_, ev_nums_, default_value, d_args_);
     }
 
     CK_CUDA_THROW_(cudaGetLastError());
@@ -507,7 +402,7 @@ class GroupEmbeddingVarLookupOp
       OP_REQUIRES_OK(ctx, LookupResource(ctx, HandleFromInput(ctx, i), &ev));
       core::ScopedUnref unref_me(ev);
       if (is_use_default_value_tensor_) {
-        default_v = (TValue *)ctx->input(5 * this->num_lookups_).data();
+        default_v = (TValue *)ctx->input(6 * this->num_lookups_).data();
       } else {
         default_v = ev->GetDefaultValuePtr();
       }
@@ -654,20 +549,42 @@ class GroupEmbeddingVarLookupOp
       
       TValue* sp_weights = nullptr;
       if (!this->ignore_weights_) {
-        const Tensor &sp_weights_tensor = ctx->input(this->num_lookups_ * 4 + i);
+        const Tensor &sp_weights_tensor = ctx->input(this->num_lookups_ * 5 + i);
         sp_weights = const_cast<TValue*>(sp_weights_tensor.flat<TValue>().data());
       }
 
+      // auto d_indices = unique_indices_tensor.flat<TIndice>().data();
+      // TIndice* h_value = new TIndice[unique_indices_tensor.NumElements()];
+      // cudaMemcpy(h_value, d_indices, sizeof(TIndice) * unique_indices_tensor.NumElements(), 
+      //     cudaMemcpyDeviceToHost);
+      // for (int t = 0 ; t < unique_indices_tensor.NumElements(); ++t) {
+      //   std::cout << h_value[t] << "++\n";
+      // }
+      // std::cout << " ================= " << std::endl;
+      // auto d_sp_indices = const_cast<int64_t *>(reinterpret_cast<const int64_t *>(
+      //         sp_indices_tensor.flat<int64>().data()));
+      // TValue* h_sp_value = new TValue[N * dimension];
+      // cudaMemcpy(h_sp_value, out_base, sizeof(TValue) * N * dimension, 
+      //     cudaMemcpyDeviceToHost);
+      // for (int t = 0 ; t < N * dimension; ++t) {
+      //   std::cout << h_sp_value[t] << "=====\n";
+      // }
+
       this->lookuper_.set(
-          i, out_base, op_output, values_offset, N, origin_nnz, sp_weights,
-          const_cast<TIndice *>(reinterpret_cast<const TIndice *>(
-              unique_indices_tensor.flat<TIndice>().data())),
+          i, out_base, op_output, values_offset, origin_nnz, sp_weights,
+          const_cast<TIndice*>(unique_indices_tensor.flat<TIndice>().data()),
           const_cast<int64_t *>(reinterpret_cast<const int64_t *>(sp_indices)));
 
       tensor_list_.emplace_back(out_tensor);
     }
-
-    this->Lookup(true, batch_size, device.stream());
+    
+    if (this->combiner_ == "sum") {
+      this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, TIndice, Sum>, default_v, batch_size, device.stream());
+    } else if (this->combiner_ == "mean") {
+      this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, TIndice, Mean>, default_v, batch_size, device.stream());
+    } else {
+      this->lookuper_.compute(EmbeddingVarComputeFn<TKey, TValue, TIndice, Sqrtn>, default_v, batch_size, device.stream());
+    }
 
     tensor_list_.clear();
   }
@@ -705,15 +622,19 @@ class GroupVariableLookupOp
  public:
   explicit GroupVariableLookupOp(OpKernelConstruction* c)
       : GroupEmbeddingLookupForwardBaseOp<TKey, TValue, TIndice>(c) {
+    tensor_list_.reserve(this->num_lookups_);
   }
 
   void Compute(OpKernelContext* ctx) override {
     const cudaStream_t stream = ctx->eigen_device<GPUDevice>().stream();
     int batch_size = -1;
+    const Tensor& default_value_tensor = ctx->input(this->num_lookups_ * 6);
+    TValue* default_value = const_cast<TValue*>(default_value_tensor.flat<TValue>().data());
 
     for (int i = 0; i < this->num_lookups_; ++i) {
       const Tensor& emb_variable_tensor = ctx->input(i);
       const Tensor& unique_values_tensor = ctx->input(this->num_lookups_ + i);
+      auto unique_values = unique_values_tensor.flat<TFKey>().data();
       int64 emb_row_size = emb_variable_tensor.shape().dim_size(0);
       int64 emb_vec_size = emb_variable_tensor.shape().dim_size(1);
 
@@ -729,6 +650,37 @@ class GroupVariableLookupOp
         auto dense_shape = dense_shape_tensor.flat<int64>().data();
         batch_size = dense_shape[0];
       }
+
+      const auto* key_base = const_cast<TKey *>(reinterpret_cast<const TKey *>(unique_values));
+      Tensor out_tensor;
+      OP_REQUIRES_OK(ctx, ctx->allocate_temp(DataTypeToEnum<TValue>::value,
+                                             {unique_nnz * emb_vec_size}, &out_tensor));
+      TValue* out_base = out_tensor.flat<TValue>().data();
+      tensor_list_.emplace_back(out_tensor);
+      dim3 grid_size{65536 / 1024, 1};
+      dim3 block_size{1024ul, 1};
+
+      VariableComputeFn<<<grid_size, block_size, 0 , stream>>>(
+          unique_nnz, emb_vec_size, emb_row_size, key_base ,
+          reinterpret_cast<const TValue *>(
+            emb_variable_tensor.flat<TValue>().data()), out_base);
+      /* 
+      auto d_indices = unique_indices_tensor.flat<TIndice>().data();
+      TIndice* h_value = new TIndice[unique_indices_tensor.NumElements()];
+      cudaMemcpy(h_value, d_indices, sizeof(TIndice) * unique_indices_tensor.NumElements(), 
+          cudaMemcpyDeviceToHost);
+      for (int t = 0 ; t < unique_indices_tensor.NumElements(); ++t) {
+        std::cout << h_value[t] << "++\n";
+      }
+      std::cout << " ================= " << std::endl;
+      auto d_sp_indices = const_cast<int64_t *>(reinterpret_cast<const int64_t *>(
+              sp_indices_tensor.flat<int64>().data()));
+      TValue* h_sp_value = new TValue[unique_nnz * emb_vec_size];
+      cudaMemcpy(h_sp_value, out_base, sizeof(TValue) * unique_nnz * emb_vec_size, 
+          cudaMemcpyDeviceToHost);
+      for (int t = 0 ; t < unique_nnz * emb_vec_size; ++t) {
+        std::cout << h_sp_value[t] << "=====\n";
+      }*/
 
       TensorShape emb_vectors_tensor_shape = TensorShape(std::vector<int64>(
           {static_cast<long long>(batch_size), emb_vec_size}));
@@ -752,25 +704,26 @@ class GroupVariableLookupOp
         const Tensor &sp_weights_tensor = ctx->input(this->num_lookups_ * 5 + i);
         sp_weights = const_cast<TValue*>(sp_weights_tensor.flat<TValue>().data());
       }
-
+      
       this->lookuper_.set(
-          i,
-          const_cast<TValue *>(reinterpret_cast<const TValue *>(
-              emb_variable_tensor.flat<TValue>().data())),
-          emb_vectors, values_offset, unique_nnz, origin_nnz, sp_weights,
-          const_cast<TIndice *>(reinterpret_cast<const TIndice *>(
-              unique_indices_tensor.flat<TIndice>().data())),
+          i, out_base, emb_vectors, values_offset, origin_nnz, sp_weights,
+              const_cast<TIndice*>(unique_indices_tensor.flat<TIndice>().data()),
           const_cast<int64_t *>(reinterpret_cast<const int64_t *>(
-              sp_indices_tensor.flat<int64>().data())),
-          const_cast<TKey *>(reinterpret_cast<const TKey *>(
-              unique_values_tensor.flat<TFKey>().data())),
-          emb_row_size);
-
+              sp_indices_tensor.flat<int64>().data())));
     }
 
-    this->Lookup(false, batch_size, stream);
+    if (this->combiner_ == "sum") {
+      this->lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, TIndice, Sum>, default_value, batch_size, stream);
+    } else if (this->combiner_ == "mean") {
+      this->lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, TIndice, Mean>, default_value, batch_size, stream);
+    } else {
+      this->lookuper_.compute(WeightedVariableComputeFn<TKey, TValue, TIndice, Sqrtn>, default_value, batch_size, stream);
+    }
+    tensor_list_.clear();
+    // this->Lookup(false, batch_size, stream);
   }
-
+ private:
+  std::vector<Tensor> tensor_list_;
 };
 
 #define REGISTER_GPU_KERNELS(key_type_tf, key_type, dtype_tf, dtype, indice_type) \

@@ -414,6 +414,7 @@ REGISTER_OP("MultiKvResourceGatherGrad")
     .Input("grads: num_lookups * dtype")
     .Input("embedding_resources: num_lookups * resource")
     .Input("sp_values: num_lookups * Tkeys")
+    .Input("sp_indices: num_lookups * int64")
     .Input("sp_values_offset: num_lookups * int32")
     .Output("nnz_grads: num_lookups * dtype")
     .Attr("dimension: int")
@@ -460,7 +461,7 @@ REGISTER_OP("GroupVariableLookup")
         ShapeHandle temp;
         TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(num_lookups+i), 1, &temp));
         TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(2*num_lookups+i), 1, &temp));
-        TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(3*num_lookups+i), 2, &temp));
+        TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(3*num_lookups+i), 1, &temp));
         // TF_RETURN_IF_ERROR(ctx->WithRank(ctx->input(4*num_lookups+i), 1, &temp));
         ShapeHandle unused;
         TF_RETURN_IF_ERROR(ctx->WithRankAtLeast(ctx->input(i), 1, &unused));
@@ -481,6 +482,7 @@ REGISTER_OP("MultiEmbeddingSparseLookUpGrad")
     .Input("grads: num_lookups * float32")
     .Input("embedding_variables: num_lookups * dtype")
     .Input("sp_values: num_lookups * Tkeys")
+    .Input("sp_indices: num_lookups * int64")
     .Input("sp_values_offset: num_lookups * int32")
     .Output("nnz_grads: num_lookups * float32")
     .Attr("dimension: int")

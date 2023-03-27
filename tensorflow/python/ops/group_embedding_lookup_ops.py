@@ -15,7 +15,8 @@ __all__ = ["group_embedding_var_lookup", "_GroupGatherGrad",
 
 #for GPU EV group_lookup
 def group_embedding_var_lookup(params,
-                             sp_values,
+                             unique_values,
+                             unique_indices,
                              sp_indices,
                              sp_dense_shape,
                              sp_weights,
@@ -31,9 +32,10 @@ def group_embedding_var_lookup(params,
     is_use_default_value_tensor = False
   if ignore_weights:
     sp_weight = ops.convert_to_tensor(1.0)
-    sp_weights = [sp_weight for _ in range(len(sp_values))]
+    sp_weights = [sp_weight for _ in range(len(sp_indices))]
   return gen_kv_variable_ops.group_embedding_var_lookup(params,
-                                                        sp_values,
+                                                        unique_values,
+                                                        unique_indices,
                                                         sp_indices,
                                                         sp_dense_shape,
                                                         sp_weights,
@@ -77,7 +79,8 @@ def _GroupGatherGrad(op, *grads):
   
 #for GPU EV group_lookup
 def group_variable_lookup(params,
-                          sp_values,
+                          unique_values,
+                          unique_indices,
                           sp_indices,
                           sp_dense_shape,
                           sp_weights,
@@ -94,10 +97,11 @@ def group_variable_lookup(params,
 
   if ignore_weights:
     sp_weight = ops.convert_to_tensor(1.0)
-    sp_weights = [sp_weight for _ in range(len(sp_values))]
+    sp_weights = [sp_weight for _ in range(len(sp_indices))]
     
   return gen_kv_variable_ops.group_variable_lookup(params,
-                                                  sp_values,
+                                                  unique_values,
+                                                  unique_indices,
                                                   sp_indices,
                                                   sp_dense_shape,
                                                   sp_weights,
@@ -115,10 +119,12 @@ def _GroupEmbeddingLookup(op, *grads):
   dimension = op.get_attr("dimension")
   params = op.inputs[:ev_num]
   sp_values = op.inputs[ev_num:2*ev_num]
+  sp_indices = op.inputs[ev_num*3: ev_num*4]
   sp_values_offset = op.outputs[ev_num:2*ev_num]
   tmp_grads = gen_kv_variable_ops.multi_embedding_sparse_look_up_grad(grads[:ev_num],
                                                                       params,
                                                                       sp_values,
+                                                                      sp_indices,
                                                                       sp_values_offset,
                                                                       dimension,
                                                                       combiner)
@@ -134,6 +140,6 @@ def _GroupEmbeddingLookup(op, *grads):
     grad = array_ops.reshape(grad, values_shape)
     indice = array_ops.reshape(indice, size)
     return_grads.append(ops.IndexedSlices(grad, indice, params_shape))
-  for _ in range(ev_num*4+1):
+  for _ in range(ev_num*5+1):
     return_grads.append(None)
   return return_grads

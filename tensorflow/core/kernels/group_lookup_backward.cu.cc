@@ -20,6 +20,7 @@ limitations under the License.
 #if GOOGLE_CUDA
 #define EIGEN_USE_GPU
 
+#include "cub/device/device_scan.cuh"
 #include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/embedding/embedding_var.h"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -37,102 +38,114 @@ using GPUDevice = Eigen::GpuDevice;
 
 namespace {
 
-template <typename TKey, typename TValue>
+template <typename TValue>
 struct GroupEmbeddingBackWardArgs {
-  int nnz_;
-  int64_t emb_row_size_;
-  int *offset_indices_;
   TValue *emb_variable_;
   TValue *grads_;
   TValue *grads_output_;
-  TKey *sp_values_;
+  // TKey *unique_values_;
+  // int64_t* sp_indices_;
+  int *offset_indices_;
+  int64_t emb_row_size_;
+  int nnz_;
 };
 
-template <typename TKey, typename TValue, Combiner combiner>
+template <typename TValue, Combiner combiner>
 __global__ void ComputeEVGradFn(
     const int batch_size, const int dimension, const float max_norm,
-    const int num_lookups, GroupEmbeddingBackWardArgs<TKey, TValue> *args) {
+    const int num_lookups, int* total_offset, GroupEmbeddingBackWardArgs<TValue> *args) {
   __shared__ float l2_sum[1];
 
-  int bid = blockIdx.x;   // each block corresponding to one sample
-  int tid = threadIdx.x;  // each thread corresponding to one element in the
-                          // embedding vector
-
-  if (bid < batch_size && tid < dimension) {
-    for (int idx = 0; idx < num_lookups; ++idx) {
-      int value_offset = args[idx].offset_indices_[bid];
-      int feature_num;
-      if (blockIdx.x == int(batch_size) - 1) {
-        feature_num = args[idx].nnz_ - value_offset;
-      } else {
-        feature_num = args[idx].offset_indices_[bid + 1] - value_offset;
-      }
-      float grad = args[idx].grads_[bid * dimension + tid];
-      grad = CombineGrad<combiner>(grad, feature_num);
-
-      for (int j = 0; j < feature_num; ++j) {
-        float grad_i = grad;
-        int feature_offset = (value_offset + j) * dimension;
-        if (max_norm > 0.0f) {
-          float emb_element = 0.0f;  // TODO: hujunqi get emb_weight
-          if (threadIdx.x == 0) {
-            l2_sum[0] = 0.0f;
-          }
-          __syncthreads();
-          atomicAdd(l2_sum, emb_element * emb_element);
-          __syncthreads();
-          float l2_norm = sqrtf(l2_sum[0]);
-          if (l2_norm > max_norm) {
-            grad_i *= max_norm / l2_norm;
-          }
-        }
-        args[idx].grads_output_[(value_offset + j) * dimension + threadIdx.x] =
-            grad_i;
-      }
-    }
-  }
-}
-
-template <typename TKey, typename TValue, Combiner combiner>
-__global__ void ComputeSparseGradFn(
-    const int batch_size, const int dimension, const float max_norm,
-    const int num_lookups, GroupEmbeddingBackWardArgs<TKey, TValue> *args) {
-  __shared__ float l2_sum[1];
+  int bid = blockIdx.x;
+  int tid = threadIdx.x;
   for (int idx = 0; idx < num_lookups; ++idx) {
-    const int value_offset = args[idx].offset_indices_[blockIdx.x];
+    int value_offset;
     int feature_num;
-    if (blockIdx.x == int(batch_size) - 1) {
-      feature_num = int(args[idx].nnz_) - value_offset;
+    if (idx == 0 && bid == 0) {
+      value_offset = 0;
+      feature_num = total_offset[idx*batch_size+bid] - value_offset;
     } else {
-      feature_num = args[idx].offset_indices_[blockIdx.x + 1] - value_offset;
+      value_offset = total_offset[idx*batch_size+bid-1];
+      feature_num = total_offset[idx*batch_size+bid] - value_offset;
     }
-    float grad = args[idx].grads_[blockIdx.x * dimension + threadIdx.x];
+    
+    float grad = args[idx].grads_[bid * dimension + tid];
     // printf("feature_num is %d , grad is %lld , bid is %d , tid is %d \n",
     // feature_num, grad, blockIdx.x, threadIdx.x);
     grad = CombineGrad<combiner>(grad, feature_num);
     for (int i = 0; i < feature_num; i++) {
       float grad_i = grad;
-      if (max_norm > 0.0f) {
-        int64_t indices = int(args[idx].sp_values_[value_offset + i]);
-        float emb_element = 0.0f;
-        if (FastBoundsCheck(indices, args[idx].emb_row_size_)) {
-          emb_element =
-              args[idx].emb_variable_[indices * dimension + threadIdx.x];
-        }
-        emb_element =
-            args[idx].emb_variable_[indices * dimension + threadIdx.x];
-        if (threadIdx.x == 0) {
-          l2_sum[0] = 0.0f;
-        }
-        __syncthreads();
-        atomicAdd(l2_sum, emb_element * emb_element);
-        __syncthreads();
-        float l2_norm = sqrtf(l2_sum[0]);
-        if (l2_norm > max_norm) {
-          grad_i *= max_norm / l2_norm;
-        }
-      }
-      args[idx].grads_output_[(value_offset + i) * dimension + threadIdx.x] =
+      // if (max_norm > 0.0f) {
+      //   int64_t indices = int(args[idx].sp_values_[value_offset + i]);
+      //   float emb_element = 0.0f;
+      //   if (FastBoundsCheck(indices, args[idx].emb_row_size_)) {
+      //     emb_element =
+      //         args[idx].emb_variable_[indices * dimension + threadIdx.x];
+      //   }
+      //   emb_element =
+      //       args[idx].emb_variable_[indices * dimension + threadIdx.x];
+      //   if (threadIdx.x == 0) {
+      //     l2_sum[0] = 0.0f;
+      //   }
+      //   __syncthreads();
+      //   atomicAdd(l2_sum, emb_element * emb_element);
+      //   __syncthreads();
+      //   float l2_norm = sqrtf(l2_sum[0]);
+      //   if (l2_norm > max_norm) {
+      //     grad_i *= max_norm / l2_norm;
+      //   }
+      // }
+      args[idx].grads_output_[(value_offset + i) * dimension + tid] =
+          grad_i;
+    }
+  }
+}
+
+template <typename TValue, Combiner combiner>
+__global__ void ComputeSparseGradFn(
+    const int batch_size, const int dimension, const float max_norm,
+    const int num_lookups, int* total_offset, GroupEmbeddingBackWardArgs<TValue> *args) {
+  __shared__ float l2_sum[1];
+  int bid = blockIdx.x;
+  int tid = threadIdx.x;
+  for (int idx = 0; idx < num_lookups; ++idx) {
+    int value_offset;
+    int feature_num;
+    if (idx == 0 && bid == 0) {
+      value_offset = 0;
+      feature_num = total_offset[idx*batch_size+bid] - value_offset;
+    } else {
+      value_offset = total_offset[idx*batch_size+bid-1];
+      feature_num = total_offset[idx*batch_size+bid] - value_offset;
+    }
+    
+    float grad = args[idx].grads_[bid * dimension + tid];
+    // printf("feature_num is %d , grad is %lld , bid is %d , tid is %d \n",
+    // feature_num, grad, blockIdx.x, threadIdx.x);
+    grad = CombineGrad<combiner>(grad, feature_num);
+    for (int i = 0; i < feature_num; i++) {
+      float grad_i = grad;
+      // if (max_norm > 0.0f) {
+      //   int64_t indices = int(args[idx].sp_values_[value_offset + i]);
+      //   float emb_element = 0.0f;
+      //   if (FastBoundsCheck(indices, args[idx].emb_row_size_)) {
+      //     emb_element =
+      //         args[idx].emb_variable_[indices * dimension + threadIdx.x];
+      //   }
+      //   emb_element =
+      //       args[idx].emb_variable_[indices * dimension + threadIdx.x];
+      //   if (threadIdx.x == 0) {
+      //     l2_sum[0] = 0.0f;
+      //   }
+      //   __syncthreads();
+      //   atomicAdd(l2_sum, emb_element * emb_element);
+      //   __syncthreads();
+      //   float l2_norm = sqrtf(l2_sum[0]);
+      //   if (l2_norm > max_norm) {
+      //     grad_i *= max_norm / l2_norm;
+      //   }
+      // }
+      args[idx].grads_output_[(value_offset + i) * dimension + tid] =
           grad_i;
     }
   }
@@ -140,7 +153,7 @@ __global__ void ComputeSparseGradFn(
 
 }  // namespace
 
-template <typename TKey, typename TValue>
+template <typename TValue>
 class GroupEmbeddingBackWard {
  public:
   void initialize(int num_lookups) {
@@ -148,16 +161,17 @@ class GroupEmbeddingBackWard {
     args_.resize(num_lookups);
     CK_CUDA_THROW_(cudaMalloc(
         &d_args_,
-        sizeof(GroupEmbeddingBackWardArgs<TKey, TValue>) * num_lookups));
+        sizeof(GroupEmbeddingBackWardArgs<TValue>) * num_lookups));
   }
 
   void set(int idx, TValue *grads, TValue *grads_output, int *offset_indices,
-           TKey *sp_values, TValue *emb_variable, int64_t emb_row_size,
+           /*TKey *unique_values, int64_t* sp_indices,*/ TValue *emb_variable, int64_t emb_row_size,
            int nnz) {
     args_[idx].grads_ = grads;
     args_[idx].grads_output_ = grads_output;
     args_[idx].offset_indices_ = offset_indices;
-    args_[idx].sp_values_ = sp_values;
+    // args_[idx].unique_values_ = unique_values;
+    // args_[idx].sp_indices_ = sp_indices;
     args_[idx].emb_variable_ = emb_variable;
     args_[idx].emb_row_size_ = emb_row_size;
     args_[idx].nnz_ = nnz;
@@ -174,14 +188,36 @@ class GroupEmbeddingBackWard {
                cudaStream_t stream) {
     CK_CUDA_THROW_(cudaMemcpyAsync(
         d_args_, args_.data(),
-        args_.size() * sizeof(GroupEmbeddingBackWardArgs<TKey, TValue>),
+        args_.size() * sizeof(GroupEmbeddingBackWardArgs<TValue>),
         cudaMemcpyHostToDevice, stream));
+    
     CK_CUDA_THROW_(cudaStreamSynchronize(stream));
+    int* total_offset_indices = nullptr;
+    int* output_indices = nullptr;
+    cudaMalloc(&total_offset_indices, sizeof(int) * nums_ * batch_size);
+    cudaMalloc(&output_indices, sizeof(int) * nums_ * batch_size);
+    for (int i = 0; i < nums_; ++i) {
+      cudaMemcpyAsync(total_offset_indices + i * batch_size,
+          args_[i].offset_indices_, sizeof(int) * batch_size, cudaMemcpyDeviceToDevice, stream);
+    }
+    
+    {
+      void* cub_temp_storage = nullptr;
+      size_t temp_storage_bytes = 0;
+      cub::DeviceScan::InclusiveSum(cub_temp_storage, temp_storage_bytes, total_offset_indices,
+                                    output_indices, nums_ * batch_size, stream);
+      CK_CUDA_THROW_(cudaMalloc(&cub_temp_storage, temp_storage_bytes));
+
+      cub::DeviceScan::InclusiveSum(cub_temp_storage,
+                                    temp_storage_bytes, total_offset_indices,
+                                    output_indices, nums_ * batch_size, stream);
+    }
+    
     {
       const int blocks = int(batch_size);
       const int threads = int(dimension);
 
-      fn<<<blocks, threads, 0, stream>>>(batch_size, dimension, max_norm, nums_,
+      fn<<<blocks, threads, 0, stream>>>(batch_size, dimension, max_norm, nums_, total_offset_indices,
                                          d_args_);
     }
 
@@ -190,8 +226,8 @@ class GroupEmbeddingBackWard {
 
  protected:
   int nums_;
-  std::vector<GroupEmbeddingBackWardArgs<TKey, TValue>> args_;
-  GroupEmbeddingBackWardArgs<TKey, TValue> *d_args_;
+  std::vector<GroupEmbeddingBackWardArgs<TValue>> args_;
+  GroupEmbeddingBackWardArgs<TValue> *d_args_;
 };
 
 template <typename TKey, typename TValue>
@@ -210,7 +246,7 @@ class GroupLookupBackWardBaseOp : public OpKernel {
   float max_norm_;
   int num_lookups_;
   int dimension_;
-  GroupEmbeddingBackWard<TKey, TValue> lookuper_;
+  GroupEmbeddingBackWard<TValue> lookuper_;
 };
 
 template <typename TFKey, typename TKey, typename TValue>
@@ -226,9 +262,10 @@ class MultiEmbeddingSparseLookupBackWardOp
     for (int i = 0; i < this->num_lookups_; ++i) {
       const Tensor grads_tensor = ctx->input(i);
       const Tensor emb_variables_tensor = ctx->input(this->num_lookups_ + i);
-      const Tensor sp_values_tensor = ctx->input(2 * this->num_lookups_ + i);
+      const Tensor unique_values_tensor = ctx->input(2 * this->num_lookups_ + i);
+      const Tensor sp_indices_values_tensor = ctx->input(3 * this->num_lookups_ + i);
       const Tensor sp_values_offset_tensor =
-          ctx->input(3 * this->num_lookups_ + i);
+          ctx->input(4 * this->num_lookups_ + i);
 
       int64 emb_row_size = emb_variables_tensor.shape().dim_size(0);
       if (batch_size == -1) {
@@ -241,7 +278,7 @@ class MultiEmbeddingSparseLookupBackWardOp
           errors::InvalidArgument(
               "shape[0] of each tensor in offset_indices are different."));
 
-      const int64_t nnz = sp_values_tensor.NumElements();
+      const int64_t nnz = sp_indices_values_tensor.NumElements();
 
       Tensor *grads_sp_values_tensor;
       TensorShape grads_sp_values_tensor_shape =
@@ -252,25 +289,27 @@ class MultiEmbeddingSparseLookupBackWardOp
           i, const_cast<TValue *>(grads_tensor.flat<TValue>().data()),
           const_cast<TValue *>(grads_sp_values_tensor->flat<TValue>().data()),
           const_cast<int *>(sp_values_offset_tensor.flat<int>().data()),
-          const_cast<TKey *>(reinterpret_cast<const TKey *>(
-              sp_values_tensor.flat<TFKey>().data())),
+          // const_cast<TKey *>(reinterpret_cast<const TKey *>(
+          //     unique_values_tensor.flat<TFKey>().data())),
+          // const_cast<int64_t*>(reinterpret_cast<const int64*>(
+          //     sp_indices_values_tensor.flat<int64>().data())),
           const_cast<TValue *>(emb_variables_tensor.flat<TValue>().data()),
           emb_row_size, nnz);
     }
 
-    if (this->combiner_ == "mean") {
-      this->lookuper_.compute(ComputeSparseGradFn<TKey, TValue, Mean>,
-                              batch_size, this->dimension_, this->max_norm_,
-                              stream);
-    } else if (this->combiner_ == "sum") {
-      this->lookuper_.compute(ComputeSparseGradFn<TKey, TValue, Sum>,
-                              batch_size, this->dimension_, this->max_norm_,
-                              stream);
-    } else {
-      this->lookuper_.compute(ComputeSparseGradFn<TKey, TValue, Sqrtn>,
-                              batch_size, this->dimension_, this->max_norm_,
-                              stream);
-    }
+    // if (this->combiner_ == "mean") {
+    //   this->lookuper_.compute(ComputeSparseGradFn<TKey, TValue, Mean>,
+    //                           batch_size, this->dimension_, this->max_norm_,
+    //                           stream);
+    // } else if (this->combiner_ == "sum") {
+    //   this->lookuper_.compute(ComputeSparseGradFn<TKey, TValue, Sum>,
+    //                           batch_size, this->dimension_, this->max_norm_,
+    //                           stream);
+    // } else {
+    //   this->lookuper_.compute(ComputeSparseGradFn<TKey, TValue, Sqrtn>,
+    //                           batch_size, this->dimension_, this->max_norm_,
+    //                           stream);
+    // }
   }
 };
 
@@ -303,9 +342,10 @@ class MultiKvResourceGatherBackWardOp
           ctx, LookupResource(ctx, HandleFromInput(ctx, this->num_lookups_ + i),
                               &ev));
       core::ScopedUnref unref_me(ev);
-      const Tensor sp_values_tensor = ctx->input(2 * this->num_lookups_ + i);
+      const Tensor unique_values_tensor = ctx->input(2 * this->num_lookups_ + i);
+      const Tensor sp_indices_values_tensor = ctx->input(3 * this->num_lookups_ + i);
       const Tensor sp_values_offset_tensor =
-          ctx->input(3 * this->num_lookups_ + i);
+          ctx->input(4 * this->num_lookups_ + i);
       int dimension = ev->ValueLen();
       if (batch_size == -1) {
         batch_size = sp_values_offset_tensor.shape().dim_size(0);
@@ -315,7 +355,7 @@ class MultiKvResourceGatherBackWardOp
           errors::InvalidArgument(
               "shape[0] of each tensor in offset_indices are different."));
 
-      const int64_t nnz = sp_values_tensor.NumElements();
+      const int64_t nnz = sp_indices_values_tensor.NumElements();
 
       Tensor *grads_sp_values_tensor;
       TensorShape grads_sp_values_tensor_shape =
@@ -326,22 +366,24 @@ class MultiKvResourceGatherBackWardOp
           i, const_cast<TValue *>(grads_tensor.flat<TValue>().data()),
           const_cast<TValue *>(grads_sp_values_tensor->flat<TValue>().data()),
           const_cast<int *>(sp_values_offset_tensor.flat<int>().data()),
-          const_cast<TKey *>(reinterpret_cast<const TKey *>(
-              sp_values_tensor.flat<TFKey>().data())),
+          // const_cast<TKey *>(reinterpret_cast<const TKey *>(
+          //     unique_values_tensor.flat<TFKey>().data())),
+          // const_cast<int64_t*>(reinterpret_cast<const int64*>(
+          //     sp_indices_values_tensor.flat<int64>().data())),
           const_cast<TValue *>(grads_sp_values_tensor->flat<TValue>().data()),
           -1, nnz);
     }
 
-    if (this->combiner_ == "mean") {
-      this->lookuper_.compute(ComputeEVGradFn<TKey, TValue, Mean>, batch_size,
-                              this->dimension_, this->max_norm_, stream);
-    } else if (this->combiner_ == "sum") {
-      this->lookuper_.compute(ComputeEVGradFn<TKey, TValue, Sum>, batch_size,
-                              this->dimension_, this->max_norm_, stream);
-    } else {
-      this->lookuper_.compute(ComputeEVGradFn<TKey, TValue, Sqrtn>, batch_size,
-                              this->dimension_, this->max_norm_, stream);
-    }
+    // if (this->combiner_ == "mean") {
+    //   this->lookuper_.compute(ComputeEVGradFn<TKey, TValue, Mean>, batch_size,
+    //                           this->dimension_, this->max_norm_, stream);
+    // } else if (this->combiner_ == "sum") {
+    //   this->lookuper_.compute(ComputeEVGradFn<TKey, TValue, Sum>, batch_size,
+    //                           this->dimension_, this->max_norm_, stream);
+    // } else {
+    //   this->lookuper_.compute(ComputeEVGradFn<TKey, TValue, Sqrtn>, batch_size,
+    //                           this->dimension_, this->max_norm_, stream);
+    // }
   }
 };
 
