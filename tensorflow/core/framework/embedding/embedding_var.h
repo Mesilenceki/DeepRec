@@ -30,7 +30,8 @@ limitations under the License.
 #include "tensorflow/core/framework/embedding/cache.h"
 #include "tensorflow/core/framework/embedding/value_ptr.h"
 #include "tensorflow/core/framework/embedding/filter_factory.h"
-// #include "tensorflow/core/framework/embedding/gpu_hash_table.h"
+#include "tensorflow/core/framework/embedding/gpu_hash_map_kv.h"
+#include "tensorflow/core/framework/embedding/embedding_config.h"
 #include "tensorflow/core/framework/embedding/storage_manager.h"
 #include "tensorflow/core/framework/typed_allocator.h"
 
@@ -620,6 +621,7 @@ class EmbeddingVar : public ResourceBase {
   void LookupOrCreate(const K* key, V* val, V* default_v,
       int32 default_v_num, bool is_use_default_value_tensor,
       size_t n, const Eigen::GpuDevice& device) {
+    std::cout << "using training interface" << std::endl;
     storage_manager_->BatchLookupOrCreate(key, val, default_v, default_v_num,
         is_use_default_value_tensor, n, device);
   }
@@ -632,6 +634,7 @@ class EmbeddingVar : public ResourceBase {
   void Lookup(const K* key, V* val, V* default_v,
       int32 default_v_num, bool is_use_default_value_tensor,
       size_t n, const Eigen::GpuDevice& device) {
+    std::cout << "using inference interface" << std::endl;
     storage_manager_->BatchLookup(key, val, default_v, default_v_num,
         is_use_default_value_tensor, n, device);
   }

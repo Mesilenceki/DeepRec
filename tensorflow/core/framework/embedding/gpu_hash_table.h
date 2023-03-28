@@ -59,7 +59,6 @@ struct KvLookupInsertKey {
                   cudaStream_t stream);
 };
 
-namespace functor {
 template <typename Device, typename Key, typename V>
 struct KvLookupKey {
   void operator()(const Key* key_first,
