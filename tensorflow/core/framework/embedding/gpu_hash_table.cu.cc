@@ -23,9 +23,9 @@
 #include <cublas_v2.h>
 #include <unordered_map>
 #include "cuco/dynamic_map.cuh"
+#include "tensorflow/core/framework/embedding/gpu_hash_table.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/framework/allocator.h"
-#include "tensorflow/core/framework/embedding/gpu_hash_table.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/framework/types.h"
@@ -117,6 +117,96 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_ALL_TYPE)
 
 namespace functor {
 using atomicT = cuda::atomic<std::size_t, cuda::thread_scope_device>;
+
+template <uint32_t block_size,
+          uint32_t tile_size,
+          typename Key,
+          typename mutableViewT,
+          typename ViewT,
+          typename Hash     = cuco::detail::MurmurHash3_32<Key>,
+          typename KeyEqual = thrust::equal_to<Key>>
+__global__ void kv_lookup_key_kernel(const Key* key_first,
+                                                int32* value_first,
+                                                int32 num_items,
+                                                mutableViewT* submap_mutable_views,
+                                                ViewT* submap_views,
+                                                uint32_t num_submaps,
+                                                atomicT* start_idx,
+                                                int32 submap_idx,
+                                                Hash hash = Hash{},
+                                                KeyEqual key_equal = KeyEqual{}) {
+
+  auto tile = cg::tiled_partition<tile_size>(cg::this_thread_block());
+  auto tid = blockDim.x * blockIdx.x + threadIdx.x;
+  auto key_idx = tid / tile_size;
+  auto empty_value_sentinel = submap_views[0].get_empty_value_sentinel();
+  int32 tmp;
+
+  while(key_idx < num_items) {
+    auto key = *(key_first + key_idx);
+    int32 found_value = empty_value_sentinel;
+
+    for(auto i = 0; i < num_submaps; ++i) {
+      auto submap_view = submap_views[i];
+      auto found = submap_view.find(tile, key, hash, key_equal);
+      if (found != submap_view.end()) {
+        found_value = found->second;
+        break;
+      }
+    }
+    if (found_value == empty_value_sentinel) {
+      if (tile.thread_rank() == 0) {
+        tmp = start_idx->fetch_add(1);
+      }
+      found_value = tile.shfl(tmp, 0);
+    }
+
+    if (tile.thread_rank() == 0) {
+      *(value_first + key_idx) = found_value;
+    }
+    key_idx += (gridDim.x * blockDim.x) / tile_size;
+  }
+}
+
+template <typename Key, typename V>
+struct KvLookupKey<GPUDevice, Key, V> {
+  void operator()(const Key* key_first,
+                  int32* value_first,
+                  int32 num_items,
+                  GPUHashTable<Key, V>* hash_table,
+                  atomicT* start_idx,
+                  cudaStream_t stream) {
+    using mutableViewT = typename cuco::dynamic_map<Key, int32, cuda::thread_scope_device, gpu_hash_map_tf_allocator<uint8_t>>::mutable_view_type;
+    using ViewT = typename cuco::dynamic_map<Key, int32, cuda::thread_scope_device, gpu_hash_map_tf_allocator<uint8_t>>::view_type;
+    auto& map = hash_table->hash_table->map_;
+    uint32_t submap_idx = 0;
+    std::size_t num_to_lookup = num_items;
+
+    while (num_to_lookup > 0) {
+      std::size_t capacity_remaining =
+          map.get_max_load_factor() * map.get_submaps()[submap_idx]->get_capacity() - map.get_submaps()[submap_idx]->get_size();
+      if (capacity_remaining >= map.get_min_insert_size()) {
+
+        auto n = std::min(capacity_remaining, num_to_lookup);
+        auto const block_size = 128;
+        auto const stride = 1;
+        auto const tile_size = 4;
+        auto const grid_size = (tile_size * n + stride * block_size - 1) / (stride * block_size);
+        TF_CHECK_OK(GpuLaunchKernel(kv_lookup_key_kernel<block_size, tile_size, Key, mutableViewT, ViewT, cuco::detail::MurmurHash3_32<Key>, thrust::equal_to<Key>>,
+                                    grid_size, block_size, 0, stream,
+                                    key_first, value_first, n,
+                                    map.get_submap_mutable_views().data().get(), map.get_submap_views().data().get(), map.get_submaps().size(),
+                                    start_idx, submap_idx,
+                                    cuco::detail::MurmurHash3_32<Key>{}, thrust::equal_to<Key>{}));
+        CUCO_CUDA_TRY(cudaDeviceSynchronize());
+        key_first += n;
+        value_first += n;
+        num_to_lookup -= n;
+      }
+      submap_idx++;
+    }
+  }
+};
 
 template <uint32_t block_size,
           uint32_t tile_size,
@@ -466,6 +556,8 @@ struct KvEmbGetSnapshot<GPUDevice, Key, Value> {
 #define REGISTER_ALL_TYPE(type)                                       \
   template struct functor::KvLookupInsertKey<GPUDevice, int32, type>; \
   template struct functor::KvLookupInsertKey<GPUDevice, int64, type>; \
+  template struct functor::KvLookupKey<GPUDevice, int32, type>;       \
+  template struct functor::KvLookupKey<GPUDevice, int64, type>;       \
   template struct functor::KvLookupCreateEmb<GPUDevice, int32, type>; \
   template struct functor::KvLookupCreateEmb<GPUDevice, int64, type>; \
   template struct functor::KvKeyGetSnapshot<GPUDevice, int32, type>;  \

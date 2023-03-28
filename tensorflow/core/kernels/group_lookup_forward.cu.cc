@@ -40,6 +40,8 @@ using GPUDevice = Eigen::GpuDevice;
 
 namespace {
 
+const char* kInferenceMode = "INFERENCE_MODE";
+
 template <typename TKey, typename TValue, typename TIndice>
 struct GroupEmbeddingForWardArgs {
   TValue* emb_variable_;
@@ -359,6 +361,8 @@ class GroupEmbeddingVarLookupOp
  public:
   explicit GroupEmbeddingVarLookupOp(OpKernelConstruction* c)
       : GroupEmbeddingLookupForwardBaseOp<TKey, TValue, TIndice>(c) {
+    bool is_inference;
+    TF_CHECK_OK(ReadBoolFromEnvVar(kInferenceMode, false, &is_inference));
     OP_REQUIRES_OK(c, c->GetAttr("is_use_default_value_tensor",
                                  &is_use_default_value_tensor_));
     if (is_use_default_value_tensor_) {
@@ -369,6 +373,23 @@ class GroupEmbeddingVarLookupOp
       get_default_v_fn_ = [](TValue *default_v, TFKey id, int64 index,
                              int64 total_dim, int64 len) {
         return default_v + len * (id % total_dim);
+      };
+    }
+    if (!is_inference) {
+      lookup_fn_ = [](EmbeddingVar<TFKey, TValue>* ev, const TFKey* key,
+                      TValue* val, TValue* default_v, int32 default_v_num,
+                      bool is_use_default_value_tensor,
+                      size_t n, const Eigen::GpuDevice& device) {
+        ev->LookupOrCreate(key, val, default_v, default_v_num,
+            is_use_default_value_tensor, n, device);
+      };
+    } else {
+      lookup_fn_ = [](EmbeddingVar<TFKey, TValue>* ev, const TFKey* key,
+                      TValue* val, TValue* default_v, int32 default_v_num,
+                      bool is_use_default_value_tensor,
+                      size_t n, const Eigen::GpuDevice& device) {
+        ev->Lookup(key, val, default_v, default_v_num,
+            is_use_default_value_tensor, n, device);
       };
     }
     tensor_list_.reserve(this->num_lookups_);
@@ -422,12 +443,12 @@ class GroupEmbeddingVarLookupOp
           auto default_values_matrix =
               default_values.shaped<TValue, 2>({default_value_num, dimension});
           TValue* default_v_base = &default_values_matrix(0, 0);
-          ev->LookupOrCreate(key_base, out_base, default_v_base,
-                             default_value_num, is_use_default_value_tensor_, N,
-                             device);
+          lookup_fn_(ev, key_base, out_base, default_v_base,
+                      default_value_num, is_use_default_value_tensor_, N,
+                      device);
         } else {
-          ev->LookupOrCreate(key_base, out_base, ev->GetDefaultValuePtr(),
-                             ev->GetDefaultValueDim(), true, N, device);
+          lookup_fn_(ev, key_base, out_base, ev->GetDefaultValuePtr(),
+                      ev->GetDefaultValueDim(), true, N, device);
         }
       } else {
         auto out_flat =
@@ -594,6 +615,10 @@ class GroupEmbeddingVarLookupOp
   std::map<uint64, int64> hash_map_;
   std::function<TValue *(TValue *, TFKey, int64, int64, int64)>
       get_default_v_fn_;
+  std::function<void(EmbeddingVar<TFKey, TValue>* ev, const TFKey* key,
+                      TValue* val, TValue* default_v, int32 default_v_num,
+                      bool is_use_default_value_tensor,
+                      size_t n, const Eigen::GpuDevice& device)> lookup_fn_;
   mutable easy_spinrwlock_t mu_ = EASY_SPINRWLOCK_INITIALIZER;
   bool* occupy_flag_{nullptr};
   mutex m_init_occupy_flag_;
@@ -626,7 +651,8 @@ class GroupVariableLookupOp
   }
 
   void Compute(OpKernelContext* ctx) override {
-    const cudaStream_t stream = ctx->eigen_device<GPUDevice>().stream();
+    auto device = ctx->eigen_device<GPUDevice>();
+    const cudaStream_t stream  = device.stream();
     int batch_size = -1;
     const Tensor& default_value_tensor = ctx->input(this->num_lookups_ * 6);
     TValue* default_value = const_cast<TValue*>(default_value_tensor.flat<TValue>().data());
@@ -658,8 +684,9 @@ class GroupVariableLookupOp
       TValue* out_base = out_tensor.flat<TValue>().data();
       tensor_list_.emplace_back(out_tensor);
 
-      dim3 grid_size{65536 / 1024, 1};
-      dim3 block_size{1024ul, 1};
+      dim3 grid_size{65536 / 32, 1};
+      dim3 block_size{32, 1};
+
       VariableComputeFn<<<grid_size, block_size, 0 , stream>>>(
           unique_nnz, emb_vec_size, emb_row_size, key_base ,
           reinterpret_cast<const TValue *>(

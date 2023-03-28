@@ -22,7 +22,7 @@ limitations under the License.
 namespace tensorflow {
 namespace embedding {
 
-template<typename K, typename V>
+template<class K, class V>
 class GPUHashMapKV : public KVInterface<K, V> {
  public:
   GPUHashMapKV(const EmbeddingConfig& config, Allocator* alloc)
@@ -231,6 +231,26 @@ class GPUHashMapKV : public KVInterface<K, V> {
 
   GPUHashTable<K, V>* HashTable() override {
     return hash_table_;
+  }
+
+  Status BatchLookup(const K* keys, V* val, V* default_v,
+      int32 default_v_num, bool is_use_default_value_tensor,
+      size_t n, const Eigen::GpuDevice& device) override {
+    int32* item_idxs = TypedAllocator::Allocate<int32>(alloc_, n,
+        AllocationAttributes());
+
+    functor::KvLookupKey<Eigen::GpuDevice, K, V>()(
+          keys, item_idxs, n, hash_table_, hash_table_->start_idx,
+          device.stream());
+
+    functor::KvLookupCreateEmb<Eigen::GpuDevice, K, V>()(
+        keys, val, default_v, value_len_, item_idxs, n,
+        config_.emb_index, default_v_num, is_use_default_value_tensor,
+        hash_table_->d_bank_ptrs, hash_table_->d_existence_flag_ptrs,
+        (config_.block_num * (1 + config_.slot_num)),
+        hash_table_->initial_bank_size, device.stream());
+    TypedAllocator::Deallocate(alloc_, item_idxs, n);
+    return Status::OK();
   }
 
  private:

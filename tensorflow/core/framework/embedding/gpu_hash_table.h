@@ -59,6 +59,17 @@ struct KvLookupInsertKey {
                   cudaStream_t stream);
 };
 
+namespace functor {
+template <typename Device, typename Key, typename V>
+struct KvLookupKey {
+  void operator()(const Key* key_first,
+                  int32* value_first,
+                  int32 num_items,
+                  GPUHashTable<Key, V>* hash_table,
+                  cuda::atomic<std::size_t, cuda::thread_scope_device>* start_idx,
+                  cudaStream_t stream);
+};
+
 template <typename Device, typename Key, typename Value>
 struct KvLookupCreateEmb {
   void operator()(const Key* key_first,

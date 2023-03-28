@@ -280,7 +280,7 @@ class SingleTierStorage : public Storage<K, V> {
       K* ids, int64 size, int64 value_len, int64 emb_index) override {
     LOG(FATAL)<<"This Storage dosen't have a HBM storage.";
   }
-
+  
   Status Shrink(int64 value_len) override {
     mutex_lock l(Storage<K, V>::mu_);
     L2WeightShrinkPolicy<K, V>* l2_weight_shrink =

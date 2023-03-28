@@ -106,13 +106,18 @@ class KVInterface {
       int32* item_idxs, const Eigen::GpuDevice& device) {
     return Status::OK();
   }
-
   virtual GPUHashTable<K, V>* HashTable() {
     return nullptr;
   }
 
   virtual void SetValueLen(int64 value_len) {}
 
+  virtual Status BatchLookup(const K* keys, V* val, V* default_v,
+      int32 default_v_num, bool is_use_default_value_tensor,
+      size_t n, const Eigen::GpuDevice& device) {
+    return Status(error::Code::UNIMPLEMENTED,
+                  "Unimplemented for BatchLookup in KVInterface.");
+  }
 };
 
 }  // namespace embedding
