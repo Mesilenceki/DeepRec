@@ -630,6 +630,13 @@ class EmbeddingVar : public ResourceBase {
     storage_manager_->BatchLookupOrCreateKeys(key, item_idxs, n, device);
   }
 
+  void Lookup(const K* key, V* val, V* default_v,
+      int32 default_v_num, bool is_use_default_value_tensor,
+      size_t n, const Eigen::GpuDevice& device) {
+    storage_manager_->BatchLookup(key, val, default_v, default_v_num,
+        is_use_default_value_tensor, n, device);
+  }
+
   int32 SlotNum() {
     return (emb_config_.block_num * (1 + emb_config_.slot_num));
   }

@@ -201,6 +201,13 @@ class StorageManager {
     storage_->ImportToHbm(keys, values, device, emb_config);
   }
 
+  void BatchLookup(const K* keys, V* val, V* default_v,
+      int32 default_v_num, bool is_use_default_value_tensor,
+      size_t n, const Eigen::GpuDevice& device) { 
+    storage_->BatchLookup(keys, val, default_v, default_v_num,
+        is_use_default_value_tensor, n, device);
+  }
+  
 
 #endif  // GOOGLE_CUDA
 

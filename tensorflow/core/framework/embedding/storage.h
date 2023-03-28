@@ -137,6 +137,10 @@ class Storage {
   virtual GPUHashTable<K, V>* HashTable() {
     return nullptr;
   }
+  
+  virtual void BatchLookup(const K* keys, V* val, V* default_v,
+      int32 default_v_num, bool is_use_default_value_tensor,
+      size_t n, const Eigen::GpuDevice& device) {}
 
   virtual void InitCache(embedding::CacheStrategy cache_strategy) = 0;
   virtual int64 CacheSize() const = 0;
@@ -158,7 +162,7 @@ class Storage {
       ValuePtr<V>** value_ptr_list, int64 num_of_value_ptrs) = 0;
   virtual void ImportToHbm(K* ids, int64 size, int64 value_len,
                            int64 emb_index) = 0;
- 
+
   inline mutex* get_mutex() { return &mu_; }
   inline int64 GetAllocLen() { return alloc_len_; }
   inline int64 GetOffset(int64 index) { return alloc_len_ * index; }
