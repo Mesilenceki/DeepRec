@@ -295,6 +295,8 @@ struct KvLookupInsertKey<GPUDevice, Key, V> {
         CUCO_CUDA_TRY(cudaMemPrefetchAsync(map.get_num_successes(), sizeof(atomicT), device_id));
 
         auto n = std::min(capacity_remaining, num_to_insert);
+        // std::cout << "Launching KvLookupKey cudaKernel " << n
+        //           << " submap_idx " << submap_idx<< std::endl;
         auto const block_size = 128;
         auto const stride = 1;
         auto const tile_size = 4;

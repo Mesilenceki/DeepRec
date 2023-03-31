@@ -1726,6 +1726,7 @@ def group_embedding_lookup_sparse(params,
     tf_group_id = 0
     is_ev_list = [False for _ in range(len(params))]
     params_idx_map = {}
+    batch_size = -1
 
     for index, param in enumerate(params):
       params_idx_map[param] = index
@@ -1735,6 +1736,7 @@ def group_embedding_lookup_sparse(params,
           sp_id = sp_id.to_sparse()
         except:  
           raise ValueError("sp_id is neither SparseTensor nor RaggedTensor!")
+      batch_size = math_ops.cast(sp_id.dense_shape[0], dtype=dtypes.int32)
 
       if not ignore_weights:
         sp_weight = sp_weights[index]
@@ -1763,7 +1765,6 @@ def group_embedding_lookup_sparse(params,
     if ev_group_id > 0:
       ev_sp_values = [[] for _ in range(ev_group_id)]
       ev_sp_indices = [[] for _ in range(ev_group_id)]
-      ev_sp_dense_shape = [[] for _ in range(ev_group_id)]
       ev_sp_weights = [[] for _ in range(ev_group_id)]
       ev_handlers = [[] for _ in range(ev_group_id)]
       ev_dimensions = [0 for _ in range(ev_group_id)]
@@ -1784,8 +1785,7 @@ def group_embedding_lookup_sparse(params,
         ev_dimensions[group_id] = dim
         ev_handlers[group_id].append(param.handle)
         ev_sp_values[group_id].append(sp_id.values)
-        ev_sp_indices[group_id].append(sp_id.indices)
-        ev_sp_dense_shape[group_id].append(sp_id.dense_shape)
+        ev_sp_indices[group_id].append(sp_id.indices[:, 0])
         output_index_list[group_id].append(params_idx_map[param])
 
         if not ignore_weights:
@@ -1800,9 +1800,9 @@ def group_embedding_lookup_sparse(params,
           outputs = group_embedding_lookup_ops.group_embedding_var_lookup(ev_handlers[group_id],
                                                                           ev_sp_values[group_id],
                                                                           ev_sp_indices[group_id],
-                                                                          ev_sp_dense_shape[group_id],
                                                                           ev_sp_weights[group_id],
                                                                           ev_combiners[group_id],
+                                                                          batch_size,
                                                                           dim,
                                                                           ignore_weights)[0]
           for idx, output in zip(output_index, outputs):
@@ -1811,7 +1811,6 @@ def group_embedding_lookup_sparse(params,
     if tf_group_id > 0:
       tf_sp_values = [[] for _ in range(tf_group_id)]
       tf_sp_indices = [[] for _ in range(tf_group_id)]
-      tf_sp_dense_shape = [[] for _ in range(tf_group_id)]
       tf_sp_weights = [[] for _ in range(tf_group_id)]
       tf_handlers = [[] for _ in range(tf_group_id)]
       tf_dimensions = [0 for _ in range(tf_group_id)]
@@ -1831,8 +1830,7 @@ def group_embedding_lookup_sparse(params,
         tf_dimensions[group_id] = dim
         tf_handlers[group_id].append(param)
         tf_sp_values[group_id].append(sp_id.values)
-        tf_sp_indices[group_id].append(sp_id.indices)
-        tf_sp_dense_shape[group_id].append(sp_id.dense_shape)
+        tf_sp_indices[group_id].append(sp_id.indices[:, 0])
         output_index_list[group_id].append(params_idx_map[param])
 
         if not ignore_weights:
@@ -1847,9 +1845,9 @@ def group_embedding_lookup_sparse(params,
           outputs = group_embedding_lookup_ops.group_variable_lookup(tf_handlers[group_id],
                                                                       tf_sp_values[group_id],
                                                                       tf_sp_indices[group_id],
-                                                                      tf_sp_dense_shape[group_id],
                                                                       tf_sp_weights[group_id],
                                                                       tf_combiners[group_id],
+                                                                      batch_size,
                                                                       dim,
                                                                       ignore_weights)[0]
           for idx, output in zip(output_index, outputs):

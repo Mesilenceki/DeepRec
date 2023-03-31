@@ -207,7 +207,6 @@ class StorageManager {
     storage_->BatchLookup(keys, val, default_v, default_v_num,
         is_use_default_value_tensor, n, device);
   }
-  
 
 #endif  // GOOGLE_CUDA
 
