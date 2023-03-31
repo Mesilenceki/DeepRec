@@ -430,7 +430,7 @@ __global__ void NormalWeightedEmbeddingVarComputeFn(
         int64_t feature_offset = (value_offset + j) * dimension;
         TValue sum = args[ev_id].emb_variable_[feature_offset + tid];
         TValue sp_weights =
-            args[ev_id].sp_weights_[indices * emb_vec_size + tid];
+            args[ev_id].sp_weights_[feature_offset + tid];
         if (max_norm >= 0.0) {
           if (tid == 0) {
             l2_sum[0] = 0.0;
