@@ -547,7 +547,7 @@ class GroupEmbeddingLookupForWard {
 
     {
       // TODO: double check why mapped 2D grid slower
-      const int block_size = (batch_size - 1) / 64 * tile_size + 1;
+      const int block_size = batch_size / 64 * tile_size + 1;
       compute_fn<<<block_size, 64, 0, stream>>>(batch_size, dimension_,
                                                 max_norm_, ev_nums_, d_args_);
     }
