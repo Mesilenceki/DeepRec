@@ -114,7 +114,7 @@ __global__ void WeightedEmbeddingVarComputeFn(
       for (int j = 0; j < feature_num; ++j) {
         int64_t feature_offset = (value_offset + j) * dimension;
         TValue sum = args[ev_id].emb_variable_[feature_offset + tid];
-        TValue sp_weights = args[ev_id].sp_weights_[bid * dimension + tid];
+        TValue sp_weights = args[ev_id].sp_weights_[value_offset + j];
         if (max_norm >= 0.0) {
           if (tid == 0) {
             l2_sum = 0.0;
@@ -130,7 +130,9 @@ __global__ void WeightedEmbeddingVarComputeFn(
         out += sum * sp_weights;
       }
 
-      out = Combine<combiner>(out, feature_num);
+      if (feature_num > 0) {
+        out = Combine<combiner>(out, feature_num);
+      }
       args[ev_id].emb_vector_[bid * dimension + tid] = out;
     }
   }
@@ -166,7 +168,7 @@ __global__ void WeightedVariableComputeFn(
       // #pragma unroll
       for (int i = 0; i < feature_num; i++) {
         int indices = int(args[ev_id].sp_values_[value_offset + i]);
-        TValue sp_weights = args[ev_id].sp_weights_[bid * emb_vec_size + tid];
+        TValue sp_weights = args[ev_id].sp_weights_[value_offset + i];
         TValue emb_element = emb_variable[indices * emb_vec_size + tid];
         if (max_norm >= 0.0f) {
           // calc l2 norm of this emb row(per block) and compare with
@@ -186,7 +188,9 @@ __global__ void WeightedVariableComputeFn(
         }
         out += emb_element * sp_weights;
       }
-      out = Combine<combiner>(out, feature_num);
+      if (feature_num > 0) {
+        out = Combine<combiner>(out, feature_num);
+      }
       args[ev_id].emb_vector_[bid * emb_vec_size + tid] = out;
     }
   }
@@ -236,7 +240,9 @@ __global__ void EmbeddingVarComputeFn(
         out += sum;
       }
 
-      out = Combine<combiner>(out, feature_num);
+      if (feature_num > 0) {
+        out = Combine<combiner>(out, feature_num);
+      }
       args[ev_id].emb_vector_[bid * dimension + tid] = out;
     }
   }
@@ -291,7 +297,9 @@ __global__ void VariableComputeFn(
         }
         out += emb_element;
       }
-      out = Combine<combiner>(out, feature_num);
+      if (feature_num > 0) {
+        out = Combine<combiner>(out, feature_num);
+      }
       // printf("feature_num is %d value_offset is %d out is %f\n", feature_num,
       // value_offset, out);
       args[ev_id].emb_vector_[bid * emb_vec_size + tid] = out;
@@ -341,7 +349,9 @@ __global__ void NormalEmbeddingVarComputeFn(
         out += sum;
       }
 
-      out = Combine<combiner>(out, feature_num);
+      if (feature_num > 0) {
+        out = Combine<combiner>(out, feature_num);
+      }
       args[ev_id].emb_vector_[bid * dimension + tid] = out;
     }
   }
@@ -394,7 +404,9 @@ __global__ void NormalVariableComputeFn(
         }
         out += emb_element;
       }
-      out = Combine<combiner>(out, feature_num);
+      if (feature_num > 0) {
+        out = Combine<combiner>(out, feature_num);
+      }
       // printf("feature_num is %d value_offset is %d out is %f\n", feature_num,
       // value_offset, out);
       args[ev_id].emb_vector_[bid * emb_vec_size + tid] = out;
@@ -430,7 +442,7 @@ __global__ void NormalWeightedEmbeddingVarComputeFn(
         int64_t feature_offset = (value_offset + j) * dimension;
         TValue sum = args[ev_id].emb_variable_[feature_offset + tid];
         TValue sp_weights =
-            args[ev_id].sp_weights_[feature_offset + tid];
+            args[ev_id].sp_weights_[value_offset + j];
         if (max_norm >= 0.0) {
           if (tid == 0) {
             l2_sum[0] = 0.0;
@@ -446,7 +458,9 @@ __global__ void NormalWeightedEmbeddingVarComputeFn(
         out += sum * sp_weights;
       }
 
-      out = Combine<combiner>(out, feature_num);
+      if (feature_num > 0) {
+        out = Combine<combiner>(out, feature_num);
+      }
       args[ev_id].emb_vector_[bid * dimension + tid] = out;
     }
   }
@@ -481,7 +495,7 @@ __global__ void NormalWeightedVariableComputeFn(
         int indices = int(args[ev_id].sp_values_[value_offset + i]);
         TValue emb_element = emb_variable[indices * emb_vec_size + tid];
         TValue sp_weights =
-            args[ev_id].sp_weights_[indices * emb_vec_size + tid];
+            args[ev_id].sp_weights_[value_offset + i];
         // printf("indices is %d emb_element is %f\n", indices, emb_element);
         if (max_norm >= 0.0f) {
           // calc l2 norm of this emb row(per block) and compare with
@@ -501,7 +515,9 @@ __global__ void NormalWeightedVariableComputeFn(
         }
         out += emb_element * sp_weights;
       }
-      out = Combine<combiner>(out, feature_num);
+      if (feature_num > 0) {
+        out = Combine<combiner>(out, feature_num);
+      }
       args[ev_id].emb_vector_[bid * emb_vec_size + tid] = out;
     }
   }
@@ -547,9 +563,15 @@ class GroupEmbeddingLookupForWard {
 
     {
       // TODO: double check why mapped 2D grid slower
-      const int block_size = batch_size / 64 * tile_size + 1;
-      compute_fn<<<block_size, 64, 0, stream>>>(batch_size, dimension_,
-                                                max_norm_, ev_nums_, d_args_);
+      if (tile_size <= 32) {
+        const int block_size = batch_size / 64 * tile_size + 1;
+        compute_fn<<<block_size, 64, 0, stream>>>(batch_size, dimension_,
+                                                  max_norm_, ev_nums_, d_args_);
+      } else {
+        compute_fn<<<batch_size, tile_size, 0, stream>>>(batch_size, dimension_,
+                                                  max_norm_, ev_nums_, d_args_);
+      }
+      
     }
 
     CK_CUDA_THROW_(cudaGetLastError());
@@ -598,7 +620,7 @@ class GroupEmbeddingLookupForwardBaseOp : public OpKernel {
                            batch_size, 32, stream);
         } else {
           lookuper_.Lookup(NormalEmbeddingVarComputeFn<TKey, TValue, combiner>,
-                           batch_size, 64, stream);
+                           batch_size, dimension_, stream);
         }
       } else {
         if (dimension_ <= 2) {
@@ -624,7 +646,7 @@ class GroupEmbeddingLookupForwardBaseOp : public OpKernel {
         } else {
           lookuper_.Lookup(
               NormalWeightedEmbeddingVarComputeFn<TKey, TValue, combiner>,
-              batch_size, 64, stream);
+              batch_size, dimension_, stream);
         }
       }
     } else {
@@ -646,7 +668,7 @@ class GroupEmbeddingLookupForwardBaseOp : public OpKernel {
                            batch_size, 32, stream);
         } else {
           lookuper_.Lookup(NormalVariableComputeFn<TKey, TValue, combiner>,
-                           batch_size, 64, stream);
+                           batch_size, dimension_, stream);
         }
       } else {
         if (dimension_ <= 2) {
@@ -669,7 +691,7 @@ class GroupEmbeddingLookupForwardBaseOp : public OpKernel {
         } else {
           lookuper_.Lookup(
               NormalWeightedVariableComputeFn<TKey, TValue, combiner>,
-              batch_size, 64, stream);
+              batch_size, dimension_, stream);
         }
       }
     }

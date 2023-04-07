@@ -81,7 +81,8 @@ __global__ void ComputeEVGradFn(
             grad_i *= max_norm / l2_norm;
           }
         }
-        args[idx].grads_output_[(value_offset + j) * dimension + tid] = grad_i;
+        // printf("ComputeEVGradFn grad is %f \n", grad_i);
+        args[idx].grads_output_[feature_offset + tid] = grad_i;
       }
     }
   }
@@ -178,7 +179,8 @@ __global__ void NormalComputeEVGradFn(
             grad_i *= max_norm / l2_norm;
           }
         }
-        args[idx].grads_output_[(value_offset + j) * dimension + tid] = grad_i;
+        // printf("NormalComputeEVGradFn grad is %f \n", grad_i);
+        args[idx].grads_output_[feature_offset + tid] = grad_i;
       }
     }
   }
@@ -268,10 +270,16 @@ class GroupEmbeddingLookupBackWard {
         cudaMemcpyHostToDevice, stream));
 
     {
-      const int block_size = (batch_size - 1) / 64 * tile_size + 1;
+      if (tile_size <= 32) {
+        const int block_size = batch_size  / 64 * tile_size + 1;
 
-      fn<<<block_size, 64, 0, stream>>>(batch_size, max_norm_, nums_,
-                                        dimension_, d_args_);
+        fn<<<block_size, 64, 0, stream>>>(batch_size, max_norm_, nums_,
+                                          dimension_, d_args_);
+      } else {
+        fn<<<batch_size, tile_size, 0, stream>>>(batch_size, max_norm_, nums_,
+                                          dimension_, d_args_);
+      }
+      
     }
 
     CK_CUDA_THROW_(cudaGetLastError());
@@ -316,7 +324,7 @@ class GroupLookupBackWardBaseOp : public OpKernel {
                            batch_size, 32, stream);
       } else {
         lookuper_.Backward(NormalComputeEVGradFn<TKey, TValue, combiner>,
-                           batch_size, 64, stream);
+                           batch_size, dimension_, stream);
       }
     } else {
       if (dimension_ <= 2) {
@@ -336,7 +344,7 @@ class GroupLookupBackWardBaseOp : public OpKernel {
                            batch_size, 32, stream);
       } else {
         lookuper_.Backward(NormalComputeSparseGradFn<TKey, TValue, combiner>,
-                           batch_size, 64, stream);
+                           batch_size, dimension_, stream);
       }
     }
   }
