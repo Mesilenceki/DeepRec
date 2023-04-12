@@ -515,15 +515,22 @@ __global__ void kv_emb_get_snapshot_kernel(Key* key,
                                            Value** d_banks,
                                            int32 bank_num,
                                            int32 slot_num,
-                                           int32 bank_size) {
-  auto item_idx = blockIdx.x;
-  auto item_pos = item_idxs[item_idx];
-  auto bank_idx = item_pos / bank_size;
-  auto offset_in_bank = item_pos % bank_size;
-  auto slot_offset = bank_idx * slot_num + slot_idx;
-  if (key[item_idx] != empty_key_sentinel) {
-    for (auto id = threadIdx.x; id < dim; id += blockDim.x) {
-      val[item_idx * dim + id] = d_banks[slot_offset][offset_in_bank * dim + id];
+                                           int32 bank_size,
+                                           int32 start_offset,
+                                           int32 total_num) {
+  auto item_idx = start_offset + blockIdx.x;
+  if (item_idx < total_num && threadIdx.x < dim) {
+    // printf("item_idx is %d\n", item_idx);
+    auto item_pos = item_idxs[item_idx];
+    // printf("item_pos is %d\n", item_pos);
+    auto bank_idx = item_pos / bank_size;
+    auto offset_in_bank = item_pos % bank_size;
+    auto slot_offset = bank_idx * slot_num + slot_idx;
+    if (key[item_idx] != empty_key_sentinel) {
+      // for (auto id = threadIdx.x; id < dim; id += blockDim.x) {
+      Value tmp = d_banks[slot_offset][offset_in_bank * dim + threadIdx.x];
+      // val[item_idx * dim + threadIdx.x] = tmp;
+      // }
     }
   }
 }
@@ -542,14 +549,23 @@ struct KvEmbGetSnapshot<GPUDevice, Key, Value> {
                   int32 slot_num,
                   int32 bank_size,
                   cudaStream_t stream) {
-  auto const block_size = 256;
-  auto const grid_size = num_items;
-  if (grid_size == 0) return;
-  TF_CHECK_OK(GpuLaunchKernel(kv_emb_get_snapshot_kernel<Key, Value>,
-                              grid_size, block_size, 0, stream,
-                              key, val, empty_key_sentinel, dim,
-                              item_idxs, slot_idx, d_banks,
-                              bank_num, slot_num, bank_size));
+  if (num_items == 0) return;
+  // auto const block_size = 256;
+  auto const block_size = dim;
+  int num_total = num_items;
+  int32 offset = 0;
+  while (num_total > 0) {
+    auto const grid_size = std::min(num_total, 65535);
+    LOG(INFO) << "grid size is: " << grid_size << " offset is " << offset;
+    TF_CHECK_OK(GpuLaunchKernel(kv_emb_get_snapshot_kernel<Key, Value>,
+                                grid_size, block_size, 0, stream,
+                                key, val, empty_key_sentinel, dim,
+                                item_idxs, slot_idx, d_banks,
+                                bank_num, slot_num, bank_size, offset, num_items));
+    CUCO_CUDA_TRY(cudaDeviceSynchronize());
+    num_total -= grid_size;
+    offset += grid_size;
+  }
 }
 };
 

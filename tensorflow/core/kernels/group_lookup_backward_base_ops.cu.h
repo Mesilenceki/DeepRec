@@ -63,27 +63,30 @@ __global__ void ComputeEVGradFn(
       }
 
       float grad = args[idx].grads_[bid * dimension + tid];
-      grad = CombineGrad<combiner>(grad, feature_num);
+      if (feature_num > 0) {
+        grad = CombineGrad<combiner>(grad, feature_num);
 
-      for (int j = 0; j < feature_num; ++j) {
-        float grad_i = grad;
-        int feature_offset = (value_offset + j) * dimension;
-        if (max_norm > 0.0f) {
-          float emb_element = 0.0f;  // TODO: hujunqi get emb_weight
-          if (tid == 0) {
-            l2_sum = 0.0f;
+        for (int j = 0; j < feature_num; ++j) {
+          float grad_i = grad;
+          int feature_offset = (value_offset + j) * dimension;
+          if (max_norm > 0.0f) {
+            float emb_element = 0.0f;  // TODO: hujunqi get emb_weight
+            if (tid == 0) {
+              l2_sum = 0.0f;
+            }
+            tile.shfl(l2_sum, 0);
+            atomicAdd(&l2_sum, emb_element * emb_element);
+            tile.sync();
+            float l2_norm = sqrtf(l2_sum);
+            if (l2_norm > max_norm) {
+              grad_i *= max_norm / l2_norm;
+            }
           }
-          tile.shfl(l2_sum, 0);
-          atomicAdd(&l2_sum, emb_element * emb_element);
-          tile.sync();
-          float l2_norm = sqrtf(l2_sum);
-          if (l2_norm > max_norm) {
-            grad_i *= max_norm / l2_norm;
-          }
+          // printf("ComputeEVGradFn grad is %f \n", grad_i);
+          args[idx].grads_output_[feature_offset + tid] = grad_i;
         }
-        // printf("ComputeEVGradFn grad is %f \n", grad_i);
-        args[idx].grads_output_[feature_offset + tid] = grad_i;
       }
+      
     }
   }
 }
@@ -160,27 +163,29 @@ __global__ void NormalComputeEVGradFn(
         feature_num = args[idx].offset_indices_[bid + 1] - value_offset;
       }
 
-      float grad = args[idx].grads_[bid * dimension + tid];
-      grad = CombineGrad<combiner>(grad, feature_num);
+      if (feature_num > 0) {
+        float grad = args[idx].grads_[bid * dimension + tid];
+        grad = CombineGrad<combiner>(grad, feature_num);
 
-      for (int j = 0; j < feature_num; ++j) {
-        float grad_i = grad;
-        int feature_offset = (value_offset + j) * dimension;
-        if (max_norm > 0.0f) {
-          float emb_element = 0.0f;  // TODO: hujunqi get emb_weight
-          if (tid == 0) {
-            l2_sum[0] = 0.0f;
+        for (int j = 0; j < feature_num; ++j) {
+          float grad_i = grad;
+          int feature_offset = (value_offset + j) * dimension;
+          if (max_norm > 0.0f) {
+            float emb_element = 0.0f;  // TODO: hujunqi get emb_weight
+            if (tid == 0) {
+              l2_sum[0] = 0.0f;
+            }
+            __syncthreads();
+            atomicAdd(l2_sum, emb_element * emb_element);
+            __syncthreads();
+            float l2_norm = sqrtf(l2_sum[0]);
+            if (l2_norm > max_norm) {
+              grad_i *= max_norm / l2_norm;
+            }
           }
-          __syncthreads();
-          atomicAdd(l2_sum, emb_element * emb_element);
-          __syncthreads();
-          float l2_norm = sqrtf(l2_sum[0]);
-          if (l2_norm > max_norm) {
-            grad_i *= max_norm / l2_norm;
-          }
+          // printf("NormalComputeEVGradFn grad is %f \n", grad_i);
+          args[idx].grads_output_[feature_offset + tid] = grad_i;
         }
-        // printf("NormalComputeEVGradFn grad is %f \n", grad_i);
-        args[idx].grads_output_[feature_offset + tid] = grad_i;
       }
     }
   }

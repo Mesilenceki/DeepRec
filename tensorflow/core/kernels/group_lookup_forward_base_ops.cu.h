@@ -110,27 +110,26 @@ __global__ void WeightedEmbeddingVarComputeFn(
 
       TValue out = 0.0;
 
-      // #pragma unroll
-      for (int j = 0; j < feature_num; ++j) {
-        int64_t feature_offset = (value_offset + j) * dimension;
-        TValue sum = args[ev_id].emb_variable_[feature_offset + tid];
-        TValue sp_weights = args[ev_id].sp_weights_[value_offset + j];
-        if (max_norm >= 0.0) {
-          if (tid == 0) {
-            l2_sum = 0.0;
-          }
-          tile.shfl(l2_sum, 0);
-          atomicAdd(&l2_sum, sum * sum);
-          tile.sync();
-          TValue l2_norm = sqrtf(l2_sum);
-          if (l2_norm > max_norm) {
-            sum *= max_norm / l2_norm;
-          }
-        }
-        out += sum * sp_weights;
-      }
-
       if (feature_num > 0) {
+        // #pragma unroll
+        for (int j = 0; j < feature_num; ++j) {
+          int64_t feature_offset = (value_offset + j) * dimension;
+          TValue sum = args[ev_id].emb_variable_[feature_offset + tid];
+          TValue sp_weights = args[ev_id].sp_weights_[value_offset + j];
+          if (max_norm >= 0.0) {
+            if (tid == 0) {
+              l2_sum = 0.0;
+            }
+            tile.shfl(l2_sum, 0);
+            atomicAdd(&l2_sum, sum * sum);
+            tile.sync();
+            TValue l2_norm = sqrtf(l2_sum);
+            if (l2_norm > max_norm) {
+              sum *= max_norm / l2_norm;
+            }
+          }
+          out += sum * sp_weights;
+        }
         out = Combine<combiner>(out, feature_num);
       }
       args[ev_id].emb_vector_[bid * dimension + tid] = out;
@@ -221,26 +220,25 @@ __global__ void EmbeddingVarComputeFn(
       }
       TValue out = 0.0;
 
-      // #pragma unroll
-      for (int j = 0; j < feature_num; ++j) {
-        int64_t feature_offset = (value_offset + j) * dimension;
-        TValue sum = args[ev_id].emb_variable_[feature_offset + tid];
-        if (max_norm >= 0.0) {
-          if (tid == 0) {
-            l2_sum = 0.0;
-          }
-          tile.shfl(l2_sum, 0);
-          atomicAdd(&l2_sum, sum * sum);
-          tile.sync();
-          TValue l2_norm = sqrtf(l2_sum);
-          if (l2_norm > max_norm) {
-            sum *= max_norm / l2_norm;
-          }
-        }
-        out += sum;
-      }
-
       if (feature_num > 0) {
+        // #pragma unroll
+        for (int j = 0; j < feature_num; ++j) {
+          int64_t feature_offset = (value_offset + j) * dimension;
+          TValue sum = args[ev_id].emb_variable_[feature_offset + tid];
+          if (max_norm >= 0.0) {
+            if (tid == 0) {
+              l2_sum = 0.0;
+            }
+            tile.shfl(l2_sum, 0);
+            atomicAdd(&l2_sum, sum * sum);
+            tile.sync();
+            TValue l2_norm = sqrtf(l2_sum);
+            if (l2_norm > max_norm) {
+              sum *= max_norm / l2_norm;
+            }
+          }
+          out += sum;
+        }
         out = Combine<combiner>(out, feature_num);
       }
       args[ev_id].emb_vector_[bid * dimension + tid] = out;

@@ -240,7 +240,7 @@ class GroupEmbeddingVarLookupOp
         sp_weights =
             const_cast<TValue*>(sp_weights_tensor.flat<TValue>().data());
       }
-      std::cout << " ======== " << this->ignore_weights_ << std::endl;
+      // std::cout << " ======== " << this->ignore_weights_ << std::endl;
       this->lookuper_.set(i, out_base, op_output, values_offset, nnz,
                           sp_weights);
 

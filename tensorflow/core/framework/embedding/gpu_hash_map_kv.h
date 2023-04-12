@@ -90,43 +90,44 @@ class GPUHashMapKV : public KVInterface<K, V> {
       std::vector<V*>* value_list,
       const EmbeddingConfig& emb_config) {
     auto size = hash_table_->Size();
-    if (size > 0) {
-      int32* item_idxs = TypedAllocator::Allocate<int32>(
+    if (size <= 0 ) return;
+    
+    int32* item_idxs = TypedAllocator::Allocate<int32>(
           alloc_, size, AllocationAttributes());
-      K* keys_gpu = TypedAllocator::Allocate<K>(
-          alloc_, size, AllocationAttributes());
-      V* values_gpu = TypedAllocator::Allocate<V>(
-          alloc_, size * value_len_, AllocationAttributes());
-      V* values = TypedAllocator::Allocate<V>(
-          cpu_allocator(), size * value_len_, AllocationAttributes());
-      key_list->resize(size);
+    K* keys_gpu = TypedAllocator::Allocate<K>(
+        alloc_, size, AllocationAttributes());
+    V* values_gpu = TypedAllocator::Allocate<V>(
+        alloc_, size * value_len_, AllocationAttributes());
+    V* values = TypedAllocator::Allocate<V>(
+        cpu_allocator(), size * value_len_, AllocationAttributes());
+    key_list->resize(size);
+    for (int64 i = 0; i < size; i++) {
+      value_list->emplace_back(values + i * value_len_);
+    }
 
-      auto slot_num = emb_config.block_num * (1 + emb_config.slot_num);
-      functor::KvKeyGetSnapshot<Eigen::GpuDevice, K, V>()(
-          keys_gpu, item_idxs, emb_config.emb_index,
-          emb_config.primary_emb_index, hash_table_->d_existence_flag_ptrs,
-          hash_table_->mem_bank_num, slot_num,
-          hash_table_->initial_bank_size, hash_table_, size, NULL);
-      functor::KvEmbGetSnapshot<Eigen::GpuDevice, K, V>()(
-          keys_gpu, values_gpu, -1, value_len_, item_idxs,size,
+    auto slot_num = emb_config.block_num * (1 + emb_config.slot_num);
+    LOG(INFO) << " ============= hash_table size is: " << size;
+    functor::KvKeyGetSnapshot<Eigen::GpuDevice, K, V>()(
+        keys_gpu, item_idxs, emb_config.emb_index,
+        emb_config.primary_emb_index, hash_table_->d_existence_flag_ptrs,
+        hash_table_->mem_bank_num, slot_num,
+        hash_table_->initial_bank_size, hash_table_, size, NULL);
+
+    functor::KvEmbGetSnapshot<Eigen::GpuDevice, K, V>()(
+          keys_gpu, values_gpu, -1, value_len_, item_idxs, size,
           emb_config.emb_index, hash_table_->d_bank_ptrs,
           hash_table_->mem_bank_num, slot_num,
           hash_table_->initial_bank_size, NULL);
-
-      for (int64 i = 0; i < size; i++) {
-        value_list->emplace_back(values + i * value_len_);
-      }
-
-      cudaMemcpyAsync(const_cast<K*>(key_list->data()),
-          keys_gpu, size * sizeof(K), cudaMemcpyDeviceToHost);
-      cudaMemcpyAsync(values, values_gpu, size * value_len_ * sizeof(V),
-          cudaMemcpyDeviceToHost);
-      EventSynchronize(NULL);
-
-      TypedAllocator::Deallocate(alloc_, item_idxs, size);
-      TypedAllocator::Deallocate(alloc_, keys_gpu, size);
-      TypedAllocator::Deallocate(alloc_, values_gpu, size * value_len_);
-    }
+    LOG(INFO) << " ==================================== ";
+    
+    cudaMemcpyAsync(const_cast<K*>(key_list->data()),
+        keys_gpu, size * sizeof(K), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(values, values_gpu, size * value_len_ * sizeof(V),
+        cudaMemcpyDeviceToHost);
+    EventSynchronize(NULL);
+    TypedAllocator::Deallocate(alloc_, item_idxs, size);
+    TypedAllocator::Deallocate(alloc_, keys_gpu, size);
+    TypedAllocator::Deallocate(alloc_, values_gpu, size * value_len_);
   }
 
   Status Import(const std::vector<K>& key_import,
