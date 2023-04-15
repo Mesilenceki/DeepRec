@@ -23,6 +23,7 @@
 #include <cublas_v2.h>
 #include <unordered_map>
 #include "cuco/dynamic_map.cuh"
+#include "cuco/static_map.cuh"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/embedding/gpu_hash_table.h"
@@ -78,6 +79,20 @@ bool operator==(gpu_hash_map_tf_allocator<T> const&, gpu_hash_map_tf_allocator<U
 template <typename T, typename U>
 bool operator!=(gpu_hash_map_tf_allocator<T> const& lhs, gpu_hash_map_tf_allocator<U> const& rhs) noexcept {
   return not(lhs == rhs);
+}
+
+template <typename K, typename V, typename CUCOAllocator = gpu_hash_map_tf_allocator<uint8_t>>
+class StaticHashTable {
+public:
+  cuco::static_map<K, V, cuda::thread_scope_device, gpu_hash_map_tf_allocator<uint8_t>> map;
+
+  StaticHashTable(size_t initial_capacity, K empty_key_sentinel, V empty_value_sentinel, CUCOAllocator alloc)
+    : map(initial_capacity, empty_key_sentinel, empty_value_sentinel, alloc) {}
+};
+
+template <typename K, typename V>
+GPUStaticHashTable<K, V>::GPUStaticHashTable(size_t capacity, K empty_key_sentinel, V empty_value_sentinel, Allocator* alloc, cudaStream_t stream) {
+ hash_table = new StaticHashTable<K, V>(capacity, empty_key_sentinel, empty_value_sentinel, gpu_hash_map_tf_allocator<uint8_t>(alloc));
 }
 
 template <typename KeyType, typename ValueType, typename CUCOAllocator = gpu_hash_map_tf_allocator<uint8_t>>
@@ -138,7 +153,7 @@ __global__ void kv_lookup_key_kernel(const Key* key_first,
 
   auto tile = cg::tiled_partition<tile_size>(cg::this_thread_block());
   auto tid = blockDim.x * blockIdx.x + threadIdx.x;
-  auto key_idx = tid / tile_size;
+  auto key_idx = tid / tile_size; // why
   auto empty_value_sentinel = submap_views[0].get_empty_value_sentinel();
   int32 tmp;
 
@@ -153,12 +168,6 @@ __global__ void kv_lookup_key_kernel(const Key* key_first,
         found_value = found->second;
         break;
       }
-    }
-    if (found_value == empty_value_sentinel) {
-      if (tile.thread_rank() == 0) {
-        tmp = start_idx->fetch_add(1);
-      }
-      found_value = tile.shfl(tmp, 0);
     }
 
     if (tile.thread_rank() == 0) {
@@ -340,7 +349,8 @@ __global__ void kv_lookup_or_create_emb_kernel(const Key* key_first,
   bool stored = d_flags[slot_offset][offset_in_bank];
   __syncthreads();
   if (stored == false) {
-    d_flags[slot_offset][offset_in_bank] = true;
+    printf("stored false, item_idx is %d , item_pos is %d , bank_idx %d , offset_in_bank %d", item_idx, item_pos, bank_idx, offset_in_bank);
+    // d_flags[slot_offset][offset_in_bank] = true;
     for (auto id = threadIdx.x; id < dim; id += blockDim.x) {
       int32 default_v_idx;
       if (is_use_default_value_tensor) {
@@ -348,12 +358,15 @@ __global__ void kv_lookup_or_create_emb_kernel(const Key* key_first,
       } else {
         default_v_idx = *(key_first + item_idx) % default_v_num;
       }
-      d_banks[slot_offset][offset_in_bank * dim + id] = default_v[default_v_idx * dim + id];
+      val[item_idx * dim + id] = default_v[default_v_idx * dim + id];
+    }
+  } else {
+    printf("stored true, item_idx is %d , item_pos is %d , bank_idx %d , offset_in_bank %d", item_idx, item_pos, bank_idx, offset_in_bank);
+    for (auto id = threadIdx.x; id < dim; id += blockDim.x) {
+      val[item_idx * dim + id] = d_banks[slot_offset][offset_in_bank * dim + id];
     }
   }
-  for (auto id = threadIdx.x; id < dim; id += blockDim.x) {
-    val[item_idx * dim + id] = d_banks[slot_offset][offset_in_bank * dim + id];
-  }
+  
 }
 
 template <typename Key, typename Value>
@@ -529,7 +542,7 @@ __global__ void kv_emb_get_snapshot_kernel(Key* key,
     if (key[item_idx] != empty_key_sentinel) {
       // for (auto id = threadIdx.x; id < dim; id += blockDim.x) {
       Value tmp = d_banks[slot_offset][offset_in_bank * dim + threadIdx.x];
-      // val[item_idx * dim + threadIdx.x] = tmp;
+      val[item_idx * dim + threadIdx.x] = tmp;
       // }
     }
   }

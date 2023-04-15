@@ -28,6 +28,21 @@ class gpu_hash_map_tf_allocator;
 template <typename KeyType, typename ValueType, typename Allocator>
 class DynamicHashTable;
 
+template <typename KeyType, typename ValueType, typename Allocator>
+class StaticHashTable;
+
+template <typename K, typename V>
+class GPUStaticHashTable {
+public:
+  GPUStaticHashTable(size_t capacity, K empty_key_sentinel, V empty_value_sentinel, Allocator* alloc, cudaStream_t stream);
+  
+  ~GPUStaticHashTable() {}
+
+  // void Insert(const K* keys, const V* values);
+  // void Query(const K* keys, V* values);
+  StaticHashTable<K, V, gpu_hash_map_tf_allocator<uint8_t>>* hash_table; 
+};
+
 template <typename K, typename V>
 class GPUHashTable {
 public:
@@ -40,7 +55,7 @@ public:
   DynamicHashTable<K, int32, gpu_hash_map_tf_allocator<uint8_t>>* hash_table;
 
   const int32 initial_bank_size;
-  cuda::atomic<std::size_t, cuda::thread_scope_device>* start_idx;
+  cuda::atomic<std::size_t, cuda::thread_scope_device>* start_idx; //什么含义
   int32 mem_bank_num = 0;
   std::vector<V*> bank_ptrs;
   V** d_bank_ptrs = nullptr;

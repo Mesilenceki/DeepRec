@@ -291,7 +291,7 @@ def tf_copts(
             "-Wno-sign-compare",
             "-ftemplate-depth=900",
         ]) +
-        (if_not_windows(["-fno-exceptions"]) if not allow_exceptions else []) +
+        # (if_not_windows(["-fno-exceptions"]) if not allow_exceptions else []) +
         if_cuda(["-DGOOGLE_CUDA=1"]) +
         if_tensorrt(["-DGOOGLE_TENSORRT=1"]) +
         if_nccl(["-DGOOGLE_NCCL=1"]) +

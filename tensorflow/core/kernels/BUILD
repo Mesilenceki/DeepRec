@@ -741,6 +741,7 @@ cc_library(
     srcs = ["training_op_helpers.cc"],
     hdrs = ["training_op_helpers.h"],
     visibility = [":friends"],
+    copts = ["-fexceptions"],
     deps = [
         ":dense_update_functor",
         ":variable_ops",
@@ -2830,7 +2831,7 @@ tf_kernel_library(
     srcs = ["kv_variable_ops.cc",
             "kv_variable_lookup_ops.cc",
             "kv_variable_save_restore_ops.cc"],
-    copts = tf_copts() + ["-g"],
+    copts = tf_copts(allow_exceptions=True) + ["-g"],
     deps = [
         ":bounds_check",
         ":dense_update_functor",
@@ -3479,6 +3480,7 @@ cc_library(
         ":tf_record_reader_op",
         ":whole_file_read_ops",
     ],
+    copts = ["-fexceptions"],
 )
 
 IO_DEPS = [
@@ -3539,6 +3541,7 @@ tf_kernel_library(
     name = "restore_op",
     prefix = "restore_op",
     deps = SAVE_RESTORE_DEPS,
+    copts = ["-fexceptions"]
 )
 
 tf_kernel_library(
@@ -3550,7 +3553,7 @@ tf_kernel_library(
 tf_kernel_library(
     name = "save_restore_v2_ops",
     prefix = "save_restore_v2_ops",
-    copts = ["-g"],
+    copts = ["-g", "-fexceptions"],
     deps = SAVE_RESTORE_DEPS + [":incr_save_restore_ops",
         "@com_github_google_leveldb//:leveldb",]
 )
@@ -3559,6 +3562,7 @@ tf_kernel_library(
     name = "incr_save_restore_ops",
     prefix = "incr_save_restore_ops",
     deps = SAVE_RESTORE_DEPS,
+    copts = ["-fexceptions"],
 )
 
 tf_cc_test(
