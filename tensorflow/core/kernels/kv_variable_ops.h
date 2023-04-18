@@ -1108,7 +1108,6 @@ Status EVRestoreDynamically(EmbeddingVar<K, V>* ev,
     const std::string& key_suffix, const std::string& value_suffix,
     const std::string& version_suffix, const std::string& freq_suffix,
     bool reset_version = false, const Eigen::GpuDevice* device = nullptr) {
-
   // first check whether there is partition
   if (name_string.find(part_str) == std::string::npos) {
     Status s = EVRestoreNoPartition(

@@ -34,13 +34,18 @@ class StaticHashTable;
 template <typename K, typename V>
 class GPUStaticHashTable {
 public:
-  GPUStaticHashTable(size_t capacity, K empty_key_sentinel, V empty_value_sentinel, Allocator* alloc, cudaStream_t stream);
+  GPUStaticHashTable(size_t capacity, int dimension, K empty_key_sentinel,
+                     V* empty_value_sentinel, Allocator* alloc, cudaStream_t stream);
   
-  ~GPUStaticHashTable() {}
+  ~GPUStaticHashTable();
 
-  // void Insert(const K* keys, const V* values);
-  // void Query(const K* keys, V* values);
+  std::size_t Size();
+  
   StaticHashTable<K, V, gpu_hash_map_tf_allocator<uint8_t>>* hash_table; 
+  V* values_d {nullptr};
+  int dimension_;
+  V* default_values{nullptr};
+  int capacity_;
 };
 
 template <typename K, typename V>
@@ -68,10 +73,20 @@ namespace functor {
 template <typename Device, typename Key, typename V>
 struct KvLookupKey {
   void operator()(const Key* key_first,
-                  int32* value_first,
+                  V* value_first,
                   int32 num_items,
-                  GPUHashTable<Key, V>* hash_table,
-                  cuda::atomic<std::size_t, cuda::thread_scope_device>* start_idx,
+                  int32 dimension,
+                  GPUStaticHashTable<Key, V>* hash_table,
+                  cudaStream_t stream);
+};
+
+template <typename Device, typename Key, typename V>
+struct KvInitStaticMap {
+  void operator()(const Key* key_first,
+                  V* value_first,
+                  int32 num_items,
+                  int32 dimension,
+                  GPUStaticHashTable<Key, V>* hash_table,
                   cudaStream_t stream);
 };
 
