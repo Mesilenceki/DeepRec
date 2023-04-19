@@ -38,8 +38,6 @@ using GPUDevice = Eigen::GpuDevice;
 
 namespace {
 
-const char* kInferenceMode = "INFERENCE_MODE";
-
 template <typename TFKey, typename TKey, typename TValue>
 class GroupEmbeddingVarLookupOp
     : public GroupEmbeddingLookupForwardBaseOp<TKey, TValue> {

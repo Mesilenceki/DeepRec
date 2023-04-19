@@ -20,6 +20,8 @@ limitations under the License.
 
 namespace tensorflow {
 
+const char* kInferenceMode = "INFERENCE_MODE";
+
 template <class V>
 class ValuePtr;
 

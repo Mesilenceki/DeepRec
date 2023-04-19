@@ -83,10 +83,9 @@ struct KvLookupKey {
 template <typename Device, typename Key, typename V>
 struct KvInitStaticMap {
   void operator()(const Key* key_first,
-                  V* value_first,
+                  GPUStaticHashTable<Key, V>* hash_table,
                   int32 num_items,
                   int32 dimension,
-                  GPUStaticHashTable<Key, V>* hash_table,
                   cudaStream_t stream);
 };
 
