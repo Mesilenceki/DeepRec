@@ -35,7 +35,7 @@ template <typename K, typename V>
 class GPUStaticHashTable {
 public:
   GPUStaticHashTable(size_t capacity, int dimension, K empty_key_sentinel,
-                     V* empty_value_sentinel, Allocator* alloc, cudaStream_t stream);
+                     int32 empty_value_sentinel, Allocator* alloc, cudaStream_t stream);
   
   ~GPUStaticHashTable();
 

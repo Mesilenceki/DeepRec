@@ -129,12 +129,10 @@ template <typename K, typename V,
           typename CUCOAllocator = gpu_hash_map_tf_allocator<uint8_t>>
 class StaticHashTable {
  public:
-  cuco::static_map<K, V*, cuda::thread_scope_device,
-                   gpu_hash_map_tf_allocator<uint8_t>>
-      map;
+  cuco::static_map<K, int32, cuda::thread_scope_device, CUCOAllocator> map;
 
   StaticHashTable(size_t initial_capacity, K empty_key_sentinel,
-                  V* empty_value_sentinel, CUCOAllocator alloc)
+                  int32 empty_value_sentinel, CUCOAllocator alloc)
       : map(initial_capacity, empty_key_sentinel, empty_value_sentinel, alloc) {
   }
 };
@@ -142,19 +140,19 @@ class StaticHashTable {
 template <typename K, typename V>
 GPUStaticHashTable<K, V>::GPUStaticHashTable(size_t capacity, int dimension,
                                              K empty_key_sentinel,
-                                             V* empty_value_sentinel,
+                                             int32 empty_value_sentinel,
                                              Allocator* alloc,
                                              cudaStream_t stream) {
   capacity_ = capacity;
   dimension_ = dimension;
   // cudaMallocAsync(&values_d, sizeof(V) * dimension * capacity, stream);
-  cudaMallocManaged(&values_d, sizeof(V) * dimension * capacity);
+  // cudaMallocManaged(&values_d, sizeof(V) * dimension * capacity);
 
   default_values = new V[dimension];
   memset(default_values, 0, sizeof(V) * dimension);
-  hash_table =
-      new StaticHashTable<K, V>(capacity, empty_key_sentinel, default_values,
-                                gpu_hash_map_tf_allocator<uint8_t>(alloc));
+  hash_table = new StaticHashTable<K, V>(
+      capacity, empty_key_sentinel, empty_value_sentinel,
+      gpu_hash_map_tf_allocator<uint8_t>(alloc));
 }
 
 template <typename K, typename V>
@@ -184,8 +182,8 @@ template <uint32_t block_size, uint32_t tile_size, typename Key, typename V,
           typename mutableViewT,
           typename Hash = cuco::detail::MurmurHash3_32<Key>,
           typename KeyEqual = thrust::equal_to<Key>>
-__global__ void kv_initialize_static_map(const Key* key_first, V* value_first,
-                                         int32 num_items, int32 dimension,
+__global__ void kv_initialize_static_map(const Key* key_first, int32 num_items,
+                                         int32 dimension,
                                          mutableViewT map_mutable_view,
                                          atomicT* num_successes,
                                          Hash hash = Hash{},
@@ -200,9 +198,10 @@ __global__ void kv_initialize_static_map(const Key* key_first, V* value_first,
 
   while (key_idx < num_items) {
     auto key = *(key_first + key_idx);
-    auto value = value_first + key_idx * dimension;
+    // auto value = value_first + key_idx * dimension;
+    int32 value = key_idx * dimension;
 
-    auto const insert_pair = cuco::pair_type<Key, V*>{key, value};
+    auto const insert_pair = cuco::pair_type<Key, int32>{key, value};
     if (map_mutable_view.insert(tile, insert_pair, hash, key_equal) &&
         tile.thread_rank() == 0) {
       thread_num_successes++;
@@ -222,16 +221,15 @@ struct KvInitStaticMap<GPUDevice, Key, V> {
   void operator()(const Key* keys, V* values, int32 num_items, int32 dimension,
                   GPUStaticHashTable<Key, V>* hash_table, cudaStream_t stream) {
     using MutableViewT = typename cuco::static_map<
-        Key, V*, cuda::thread_scope_device,
+        Key, int32, cuda::thread_scope_device,
         gpu_hash_map_tf_allocator<uint8_t>>::device_mutable_view;
-    using atomic_ctr_type =
-        typename cuda::atomic<std::size_t, cuda::thread_scope_device>;
+
     auto& map = hash_table->hash_table->map;
     size_t num_to_insert = num_items;
     while (num_to_insert > 0) {
-      // static_assert(sizeof(std::size_t) == sizeof(atomic_ctr_type));
+      // static_assert(sizeof(std::size_t) == sizeof(atomicT));
       // CUCO_CUDA_TRY(cudaMemsetAsync(map.get_num_success(), 0,
-      // sizeof(atomic_ctr_type), stream));
+      // sizeof(atomicT), stream));
 
       *(map.get_num_success()) = 0;
       int device_id;
@@ -245,22 +243,19 @@ struct KvInitStaticMap<GPUDevice, Key, V> {
       auto const tile_size = 4;
       auto const grid_size =
           (tile_size * n + stride * block_size - 1) / (stride * block_size);
-      // LOG(INFO) << "========= num_to_insert is: " << num_to_insert;
       TF_CHECK_OK(GpuLaunchKernel(
           kv_initialize_static_map<block_size, tile_size, Key, V, MutableViewT,
                                    cuco::detail::MurmurHash3_32<Key>,
                                    thrust::equal_to<Key>>,
-          grid_size, block_size, 0, stream, keys, values, n, dimension,
+          grid_size, block_size, 0, stream, keys, n, dimension,
           map.get_device_mutable_view(), map.get_num_success(),
           cuco::detail::MurmurHash3_32<Key>{}, thrust::equal_to<Key>{}));
       CUCO_CUDA_TRY(cudaStreamSynchronize(stream));
 
       std::size_t h_num_successes =
           map.get_num_success()->load(cuda::std::memory_order_relaxed);
-      // LOG(INFO) << "========= h_num_successes is: " << h_num_successes;
       map.update_size(h_num_successes);
       keys += n;
-      values += n * dimension;
       num_to_insert -= n;
     }
   }
@@ -269,34 +264,54 @@ struct KvInitStaticMap<GPUDevice, Key, V> {
 template <uint32_t block_size, uint32_t tile_size, typename Key, typename V,
           typename ViewT, typename Hash = cuco::detail::MurmurHash3_32<Key>,
           typename KeyEqual = thrust::equal_to<Key>>
-__global__ void kv_lookup_key_kernel(const Key* key_first, V* value_first,
-                                     size_t num_items, int32 dimension,
-                                     ViewT map_views, Hash hash = Hash{},
+__global__ void kv_lookup_key_kernel(const Key* key_first, const V* value_srcs,
+                                     V* value_first, size_t num_items,
+                                     int32 dimension, ViewT map_views,
+                                     Hash hash = Hash{},
                                      KeyEqual key_equal = KeyEqual{}) {
-  auto tile = cg::tiled_partition<tile_size>(cg::this_thread_block());
+  auto grid = cooperative_groups::this_grid();
+  auto block = cooperative_groups::this_thread_block();
+  auto tile = cooperative_groups::tiled_partition<tile_size>(block);
+
   auto tid = blockDim.x * blockIdx.x + threadIdx.x;
   auto key_idx = tid / tile_size;  // actual thread idx
   auto empty_value_sentinel = map_views.get_empty_value_sentinel();
 
-  while (key_idx < num_items) {
+  for (auto key_idx = tile.meta_group_size() * block.group_index().x +
+                      tile.meta_group_rank();
+       key_idx < num_items;
+       key_idx += tile.meta_group_size() * grid.group_dim().x) {
     auto key = *(key_first + key_idx);
-    V* found_value = empty_value_sentinel;
-
+    int32 found_value = empty_value_sentinel;
     auto found = map_views.find(tile, key, hash, key_equal);
     if (found != map_views.end()) {
       found_value = found->second;
     }
-
     if (tile.thread_rank() == 0) {
       for (auto id = threadIdx.x; id < dimension; id += blockDim.x) {
-        value_first[key_idx * dimension + id] = found_value[id];
+        value_first[key_idx * dimension + id] = value_srcs[found_value+id];
       }
     }
-    // printf("One loop, key_idx %d, step %d\n", key_idx, (gridDim.x * blockDim.x) / tile_size);
-    key_idx += (gridDim.x * blockDim.x) / tile_size;
-    
   }
-  // printf("kv_lookup_key_kernel done!\n");
+
+  // while (key_idx < num_items) {
+  //   auto key = *(key_first + key_idx);
+  //   // printf("key_idx is: %lld, key is %lld \n", key_idx, key);
+
+  //   // auto found = map_views.find(tile, key, hash, key_equal);
+  //   // if (found != map_views.end()) {
+  //   //   found_value = found->second;
+  //   // }
+
+  //   // if (tile.thread_rank() == 0) {
+  //   //   for (auto id = threadIdx.x; id < dimension; id += blockDim.x) {
+  //   //     value_first[key_idx * dimension + id] = found_value[id];
+  //   //   }
+  //   // }
+  //   // printf("One loop, key_idx %d, step %d\n", key_idx, (gridDim.x *
+  //   // blockDim.x) / tile_size);
+  //   key_idx += (gridDim.x * blockDim.x) / tile_size;
+  // }
 }
 
 template <typename Key, typename V>
@@ -304,29 +319,21 @@ struct KvLookupKey<GPUDevice, Key, V> {
   void operator()(const Key* keys, V* vals, int32 num_items, int32 dimension,
                   GPUStaticHashTable<Key, V>* hash_table, cudaStream_t stream) {
     using ViewT = typename cuco::static_map<
-        Key, V*, cuda::thread_scope_device,
+        Key, int32, cuda::thread_scope_device,
         gpu_hash_map_tf_allocator<uint8_t>>::device_view;
     auto& map = hash_table->hash_table->map;
-    size_t num_to_lookup = num_items;
 
-    while (num_to_lookup > 0) {
-      auto n = std::min((size_t)65535, num_to_lookup);
-      // LOG(INFO) << "========= num_to_lookup is: " << n;
-      auto const block_size = 128;
-      auto const stride = 1;
-      auto const tile_size = 4;
-      auto const grid_size =
-          (tile_size * n + stride * block_size - 1) / (stride * block_size);
-      TF_CHECK_OK(GpuLaunchKernel(
-          kv_lookup_key_kernel<block_size, tile_size, Key, V, ViewT>, grid_size,
-          block_size, 0, stream, keys, vals, n, dimension,
-          map.get_device_view(), cuco::detail::MurmurHash3_32<Key>{},
-          thrust::equal_to<Key>{}));
-      keys += n;
-      vals += n * dimension;
-      num_to_lookup -= n;
-    }
-    CUCO_CUDA_TRY(cudaStreamSynchronize(stream));
+    auto const block_size = 128;
+    auto const stride = 1;
+    auto const tile_size = 4;
+    auto const grid_size = (tile_size * num_items + stride * block_size - 1) /
+                           (stride * block_size);
+    TF_CHECK_OK(GpuLaunchKernel(
+        kv_lookup_key_kernel<block_size, tile_size, Key, V, ViewT>, grid_size,
+        block_size, 0, stream, keys, hash_table->values_d, vals, num_items,
+        dimension, map.get_device_view(), cuco::detail::MurmurHash3_32<Key>{},
+        thrust::equal_to<Key>{}));
+    // CUCO_CUDA_TRY(cudaStreamSynchronize(stream));
   }
 };
 

@@ -59,7 +59,6 @@ class GPUHashMapKV : public KVInterface<K, V> {
                                  num_elements);
     }
     delete hash_table_;
-    
   }
 
   TF_DISALLOW_COPY_AND_ASSIGN(GPUHashMapKV);
@@ -148,14 +147,19 @@ class GPUHashMapKV : public KVInterface<K, V> {
     auto stream = device->stream();
 
     if (is_inference_) {
-      // LOG(INFO) << "calling Import on inference << import size: " << n
-      //           << " value size: " << value_import.size();
+      if (n == 0) {
+        LOG(INFO) << "Size of keys in EmbeddingVar:  " << emb_config.name
+                  << " is 0 while loading in inference mode!";
+        return Status::OK();
+      }
       static_hash_table_ = new GPUStaticHashTable<K, V>(
-          n, value_len_, (K)-1, nullptr, alloc_, stream);
+          n / 0.8 /*load_factor*/, value_len_, -1, -1, alloc_, stream);
       K* keys_d =
           TypedAllocator::Allocate<K>(alloc_, n, AllocationAttributes());
       cudaMemcpyAsync(keys_d, key_import.data(), n * sizeof(K),
                       cudaMemcpyHostToDevice, stream);
+      static_hash_table_->values_d = TypedAllocator::Allocate<V>(
+          alloc_, value_import.size(), AllocationAttributes());
       cudaMemcpyAsync(static_hash_table_->values_d, value_import.data(),
                       value_import.size() * sizeof(V), cudaMemcpyHostToDevice,
                       stream);
@@ -163,13 +167,10 @@ class GPUHashMapKV : public KVInterface<K, V> {
           keys_d, static_hash_table_->values_d, n, value_len_,
           static_hash_table_, stream);
       EventSynchronize(stream);
-      // LOG(INFO) << static_hash_table_->Size() << " ===========";
 
       TypedAllocator::Deallocate(alloc_, keys_d, n);
 
     } else {
-      // LOG(INFO) << "calling Import on training << import size: " << n
-      //           << " value size: " << value_import.size();
       if (n > 0) {
         int32* item_idxs =
             TypedAllocator::Allocate<int32>(alloc_, n, AllocationAttributes());
