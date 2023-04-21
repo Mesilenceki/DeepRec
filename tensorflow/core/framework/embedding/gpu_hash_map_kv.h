@@ -16,7 +16,6 @@ limitations under the License.
 #define TENSORFLOW_CORE_FRAMEWORK_EMBEDDING_GPU_HASH_MAP_KV_H_
 
 #if GOOGLE_CUDA
-// #include <thrust/device_vector.h>
 
 #include "tensorflow/core/framework/embedding/gpu_hash_table.h"
 #include "tensorflow/core/framework/embedding/kv_interface.h"
@@ -39,23 +38,24 @@ class GPUHashMapKV : public KVInterface<K, V> {
 
   ~GPUHashMapKV() override {
     if (is_inference_) {
-      TypedAllocator::Deallocate(alloc_, static_hash_table_->values_d,
-                                static_hash_table_->capacity_ * static_hash_table_->dimension_);
+      TypedAllocator::Deallocate(
+          alloc_, static_hash_table_->values_d,
+          static_hash_table_->capacity_ * static_hash_table_->dimension_);
       delete static_hash_table_;
     } else {
       for (int i = 0; i < hash_table_->bank_ptrs.size(); ++i) {
         TypedAllocator::Deallocate(alloc_, hash_table_->bank_ptrs[i],
-                                  value_len_ * hash_table_->initial_bank_size);
+                                    value_len_ * hash_table_->initial_bank_size);
         TypedAllocator::Deallocate(alloc_, hash_table_->existence_flag_ptrs[i],
-                                  hash_table_->initial_bank_size);
+                                    hash_table_->initial_bank_size);
       }
       if (hash_table_->mem_bank_num != 0) {
         auto num_elements = hash_table_->mem_bank_num *
                             (config_.block_num * (1 + config_.slot_num));
         TypedAllocator::Deallocate(alloc_, hash_table_->d_bank_ptrs,
-                                  num_elements);
+                                    num_elements);
         TypedAllocator::Deallocate(alloc_, hash_table_->d_existence_flag_ptrs,
-                                  num_elements);
+                                    num_elements);
       }
       delete hash_table_;
     }
@@ -99,7 +99,7 @@ class GPUHashMapKV : public KVInterface<K, V> {
 
   void GetSnapshot(std::vector<K>* key_list, std::vector<V*>* value_list,
                    const EmbeddingConfig& emb_config) {
-    if (is_inference_) return; //Special case for testing in traing mode;
+    if (is_inference_) return;  // Special case for testing in traing mode;
     auto size = hash_table_->Size();
     if (size <= 0) return;
 
@@ -115,17 +115,18 @@ class GPUHashMapKV : public KVInterface<K, V> {
     for (int64 i = 0; i < size; i++) {
       value_list->emplace_back(values + i * value_len_);
     }
-
+    auto member_slot_num = config_.block_num * (1 + config_.slot_num);
     auto slot_num = emb_config.block_num * (1 + emb_config.slot_num);
+
     functor::KvKeyGetSnapshot<Eigen::GpuDevice, K, V>()(
         keys_gpu, item_idxs, emb_config.emb_index, emb_config.primary_emb_index,
-        hash_table_->d_existence_flag_ptrs, hash_table_->mem_bank_num, slot_num,
+        hash_table_->d_existence_flag_ptrs, hash_table_->mem_bank_num, member_slot_num,
         hash_table_->initial_bank_size, hash_table_, size, NULL);
 
     functor::KvEmbGetSnapshot<Eigen::GpuDevice, K, V>()(
         keys_gpu, values_gpu, -1, value_len_, item_idxs, size,
         emb_config.emb_index, hash_table_->d_bank_ptrs,
-        hash_table_->mem_bank_num, slot_num, hash_table_->initial_bank_size,
+        hash_table_->mem_bank_num, member_slot_num, hash_table_->initial_bank_size,
         NULL);
 
     cudaMemcpyAsync(const_cast<K*>(key_list->data()), keys_gpu,
@@ -141,31 +142,38 @@ class GPUHashMapKV : public KVInterface<K, V> {
   Status Import(const std::vector<K>& key_import,
                 const std::vector<V>& value_import,
                 const Eigen::GpuDevice* device,
-                const EmbeddingConfig& emb_config) {
+                const EmbeddingConfig& emb_config,
+                const int64& total_key_num) {
     int n = key_import.size();
     auto stream = device->stream();
-
     if (is_inference_) {
       if (n == 0) {
         LOG(INFO) << "Size of keys in EmbeddingVar:  " << emb_config.name
                   << " is 0 while loading in inference mode!";
         return Status::OK();
       }
-      static_hash_table_ = new GPUStaticHashTable<K, V>(
-          n, value_len_, -1, -1, alloc_, stream);
+      // LOG(INFO) << " =========== " << n << " size is: " << (sizeof(K) + sizeof(int32)) * n + sizeof(V) * n * value_len_
+      //           << " ========= " << emb_config.DebugString();
+      mutex_lock lock(lock_);
+      if (!is_initialized_) {
+        static_hash_table_ =
+            new GPUStaticHashTable<K, V>(total_key_num, value_len_, -1, 0, alloc_, stream);
+        static_hash_table_->values_d = TypedAllocator::Allocate<V>(
+          alloc_, total_key_num * value_len_, AllocationAttributes());
+        is_initialized_ = true;
+      }
       K* keys_d =
           TypedAllocator::Allocate<K>(alloc_, n, AllocationAttributes());
       cudaMemcpyAsync(keys_d, key_import.data(), n * sizeof(K),
                       cudaMemcpyHostToDevice, stream);
-      static_hash_table_->values_d = TypedAllocator::Allocate<V>(
-          alloc_, value_import.size(), AllocationAttributes());
-      cudaMemcpyAsync(static_hash_table_->values_d, value_import.data(),
+      cudaMemcpyAsync(static_hash_table_->values_d + offset , value_import.data(),
                       value_import.size() * sizeof(V), cudaMemcpyHostToDevice,
                       stream);
       functor::KvInitStaticMap<Eigen::GpuDevice, K, V>()(
           keys_d, static_hash_table_, n, value_len_, stream);
       EventSynchronize(stream);
 
+      offset += value_import.size();
       TypedAllocator::Deallocate(alloc_, keys_d, n);
     } else {
       if (n > 0) {
@@ -195,7 +203,6 @@ class GPUHashMapKV : public KVInterface<K, V> {
         TypedAllocator::Deallocate(alloc_, key_gpu, n);
       }
     }
-
     return Status::OK();
   }
 
@@ -316,6 +323,8 @@ class GPUHashMapKV : public KVInterface<K, V> {
   Allocator* alloc_;
   int64 value_len_;
   mutex lock_;
+  bool is_initialized_{false};
+  size_t offset{0};
 };
 
 }  // namespace embedding

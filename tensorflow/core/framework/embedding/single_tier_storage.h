@@ -402,7 +402,7 @@ class HbmStorage : public SingleTierStorage<K, V> {
     SingleTierStorage<K, V>::kv_->BatchLookup(key, val, default_v, default_v_num,
         is_use_default_value_tensor, n, device);
   }
-
+  
   int64 GetSnapshot(std::vector<K>* key_list,
       std::vector<V* >* value_list,
       std::vector<int64>* version_list,
@@ -419,10 +419,11 @@ class HbmStorage : public SingleTierStorage<K, V> {
   void ImportToHbm(
       const std::vector<K>& keys, const std::vector<V>& values,
       const Eigen::GpuDevice* device,
-      const EmbeddingConfig& emb_config) override {
+      const EmbeddingConfig& emb_config,
+      const int64& total_key_num) override {
     GPUHashMapKV<K, V>* gpu_kv =
         dynamic_cast<GPUHashMapKV<K, V>*>(SingleTierStorage<K, V>::kv_);
-    gpu_kv->Import(keys, values, device, emb_config);
+    gpu_kv->Import(keys, values, device, emb_config, total_key_num);
   }
 
   GPUHashTable<K, V>* HashTable() override {

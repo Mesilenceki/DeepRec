@@ -398,6 +398,7 @@ class EmbeddingVar : public ResourceBase {
 
   Status Import(RestoreBuffer& restore_buff,
                 int64 key_num,
+                int64 total_key_num,
                 int bucket_num,
                 int64 partition_id,
                 int64 partition_num,
@@ -435,7 +436,7 @@ class EmbeddingVar : public ResourceBase {
           value_import.emplace_back(*(row_offset + j));
         }
       }
-      storage_manager_->ImportToHbm(key_import, value_import, device, emb_config_);
+      storage_manager_->ImportToHbm(key_import, value_import, device, emb_config_, total_key_num);
 #endif //GOOGLE_CUDA
       return Status::OK();
     } else {
@@ -636,7 +637,7 @@ class EmbeddingVar : public ResourceBase {
     storage_manager_->BatchLookup(key, val, default_v, default_v_num,
         is_use_default_value_tensor, n, device);
   }
-
+  
   int32 SlotNum() {
     return (emb_config_.block_num * (1 + emb_config_.slot_num));
   }

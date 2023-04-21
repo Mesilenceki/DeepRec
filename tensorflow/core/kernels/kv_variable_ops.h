@@ -365,7 +365,7 @@ Status DumpEmbeddingValues(EmbeddingVar<K, V>* ev,
 
   // save the ev with kSavedPartitionNum piece of tensor
   // so that we can dynamically load ev with changed partition number
-  bool save_unfiltered_features;
+  bool save_unfiltered_features = true;
   TF_CHECK_OK(ReadBoolFromEnvVar(
       "TF_EV_SAVE_FILTERED_FEATURES", true, &save_unfiltered_features));
   int64 filter_freq = ev->MinFreq();
@@ -375,7 +375,7 @@ Status DumpEmbeddingValues(EmbeddingVar<K, V>* ev,
         if (tot_valueptr_list[i] == reinterpret_cast<V*>(-1)) {
             // only forward, no backward, bypass
         } else if (tot_valueptr_list[i] == nullptr) {
-          if (filter_freq) {
+          if (filter_freq != 0) {
             if (save_unfiltered_features) {
               key_filter_list_parts[partid].push_back(tot_key_list[i]);
             }
@@ -396,9 +396,15 @@ Status DumpEmbeddingValues(EmbeddingVar<K, V>* ev,
   for (size_t i = 0; i < tot_version_list.size(); i++) {
     for (int partid = 0; partid < kSavedPartitionNum; partid++) {
       if (tot_key_list[i] % kSavedPartitionNum == partid) {
-        if (tot_valueptr_list[i] == nullptr) {
-          if (save_unfiltered_features) {
-            version_filter_list_parts[partid].push_back(tot_version_list[i]);
+        if (tot_valueptr_list[i] == reinterpret_cast<V*>(-1)) {
+          // only forward, no backward, bypass
+        } else if (tot_valueptr_list[i] == nullptr) {
+          if (filter_freq != 0) {
+            if (save_unfiltered_features) {
+              version_filter_list_parts[partid].push_back(tot_version_list[i]);
+            }
+          } else {
+            version_list_parts[partid].push_back(tot_version_list[i]);
           }
         } else {
           version_list_parts[partid].push_back(tot_version_list[i]);
@@ -411,9 +417,15 @@ Status DumpEmbeddingValues(EmbeddingVar<K, V>* ev,
   for (size_t i = 0; i < tot_freq_list.size(); i++) {
     for (int partid = 0; partid < kSavedPartitionNum; partid++) {
       if (tot_key_list[i] % kSavedPartitionNum == partid) {
-        if (tot_valueptr_list[i] == nullptr) {
-          if (save_unfiltered_features) {
-            freq_filter_list_parts[partid].push_back(tot_freq_list[i]);
+        if (tot_valueptr_list[i] == reinterpret_cast<V*>(-1)) {
+          // only forward, no backward, bypass
+        } else if (tot_valueptr_list[i] == nullptr) {
+          if (filter_freq != 0) {
+            if (save_unfiltered_features) {
+              freq_filter_list_parts[partid].push_back(tot_freq_list[i]);
+            }
+          } else {
+            freq_list_parts[partid].push_back(tot_freq_list[i]);
           }
         } else {
           freq_list_parts[partid].push_back(tot_freq_list[i]);
@@ -741,7 +753,7 @@ Status DynamicRestoreValue(EmbeddingVar<K, V>* ev, BundleReader* reader,
           tmp_ptr.reset(restore_buff.value_buffer);
           restore_buff.value_buffer = tmp;
         }
-        st = ev->Import(restore_buff, read_key_num, kSavedPartitionNum,
+        st = ev->Import(restore_buff, read_key_num, 0/*total_key_num*/, kSavedPartitionNum,
             partition_id, partition_num, false, device);
         if (cache_for_restore_hbm) {
           cache_for_restore_hbm->add_to_rank(
@@ -797,6 +809,12 @@ Status EVRestoreNoPartition(EmbeddingVar<K, V>* ev, BundleReader* reader,
   reader->LookupTensorShape(tensor_value, &value_shape);
   reader->LookupTensorShape(tensor_version, &version_shape);
   st = reader->LookupTensorShape(tensor_freq, &freq_shape);
+  int64 num_total_keys = key_shape.dim_size(0);
+  
+  // LOG(INFO) << key_shape.DebugString() << " ============ "
+  //           << value_shape.DebugString() << " ========== "
+  //           << freq_shape.DebugString() << " ========== "
+  //           << " +++++++++++++++++++++++++++++++++++++++";
   if (!st.ok()) {
     if (st.code() == error::NOT_FOUND) {
       freq_shape = version_shape;
@@ -967,7 +985,7 @@ Status EVRestoreNoPartition(EmbeddingVar<K, V>* ev, BundleReader* reader,
         tmp_ptr.reset(restore_buff.value_buffer);
         restore_buff.value_buffer = tmp;
       }
-      st = ev->Import(restore_buff, read_key_num, 1, 0, 1, false, device);
+      st = ev->Import(restore_buff, read_key_num, num_total_keys, 1, 0, 1, false, device);
       if (cache_for_restore_hbm) {
         cache_for_restore_hbm->add_to_rank(
             (K*)restore_buff.key_buffer, read_key_num,
@@ -1004,7 +1022,7 @@ Status EVRestoreNoPartition(EmbeddingVar<K, V>* ev, BundleReader* reader,
         read_key_num = key_filter_bytes_read / sizeof(K);
         VLOG(2) << "restore, read_key_num:" << read_key_num;
 
-        st = ev->Import(restore_buff, read_key_num, 1, 0, 1, true, device);
+        st = ev->Import(restore_buff, read_key_num, 0/*total_key_num*/, 1, 0, 1, true, device);
         if (cache_for_restore_hbm) {
           cache_for_restore_hbm->add_to_rank(
               (K*)restore_buff.key_buffer, read_key_num,
@@ -1108,6 +1126,7 @@ Status EVRestoreDynamically(EmbeddingVar<K, V>* ev,
     const std::string& key_suffix, const std::string& value_suffix,
     const std::string& version_suffix, const std::string& freq_suffix,
     bool reset_version = false, const Eigen::GpuDevice* device = nullptr) {
+
   // first check whether there is partition
   if (name_string.find(part_str) == std::string::npos) {
     Status s = EVRestoreNoPartition(
@@ -1408,7 +1427,7 @@ Status EVRestoreDynamically(EmbeddingVar<K, V>* ev,
               restore_buff.value_buffer = tmp;
             }
 
-            st = ev->Import(restore_buff, read_key_num, kSavedPartitionNum,
+            st = ev->Import(restore_buff, read_key_num, 0/*total_key_num*/, kSavedPartitionNum,
                 partition_id, partition_num, false, device);
             if (cache_for_restore_hbm) {
               cache_for_restore_hbm->add_to_rank(
@@ -1461,7 +1480,7 @@ Status EVRestoreDynamically(EmbeddingVar<K, V>* ev,
             if (key_filter_bytes_read > 0) {
               read_key_num = key_filter_bytes_read / sizeof(K);
               VLOG(2) << "restore, read_key_num:" << read_key_num;
-              st = ev->Import(restore_buff, read_key_num, kSavedPartitionNum,
+              st = ev->Import(restore_buff, read_key_num, 0/*total_key_num*/, kSavedPartitionNum,
                   partition_id, partition_num, true, device);
               if (cache_for_restore_hbm) {
                 cache_for_restore_hbm->add_to_rank(
