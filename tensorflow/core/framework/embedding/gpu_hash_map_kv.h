@@ -31,9 +31,9 @@ class GPUHashMapKV : public KVInterface<K, V> {
   GPUHashMapKV(const EmbeddingConfig& config, Allocator* alloc)
       : config_(config), alloc_(alloc) {
     TF_CHECK_OK(ReadBoolFromEnvVar(kInferenceMode, false, &is_inference_));
-    if (!is_inference_) {
-      hash_table_ = new GPUHashTable<K, V>(-1, alloc);
-    }
+    // if (!is_inference_) {
+    hash_table_ = new GPUHashTable<K, V>(-1, alloc);
+    // }
   }
 
   ~GPUHashMapKV() override {
@@ -42,23 +42,23 @@ class GPUHashMapKV : public KVInterface<K, V> {
           alloc_, static_hash_table_->values_d,
           static_hash_table_->capacity_ * static_hash_table_->dimension_);
       delete static_hash_table_;
-    } else {
-      for (int i = 0; i < hash_table_->bank_ptrs.size(); ++i) {
-        TypedAllocator::Deallocate(alloc_, hash_table_->bank_ptrs[i],
-                                    value_len_ * hash_table_->initial_bank_size);
-        TypedAllocator::Deallocate(alloc_, hash_table_->existence_flag_ptrs[i],
-                                    hash_table_->initial_bank_size);
-      }
-      if (hash_table_->mem_bank_num != 0) {
-        auto num_elements = hash_table_->mem_bank_num *
-                            (config_.block_num * (1 + config_.slot_num));
-        TypedAllocator::Deallocate(alloc_, hash_table_->d_bank_ptrs,
-                                    num_elements);
-        TypedAllocator::Deallocate(alloc_, hash_table_->d_existence_flag_ptrs,
-                                    num_elements);
-      }
-      delete hash_table_;
     }
+    for (int i = 0; i < hash_table_->bank_ptrs.size(); ++i) {
+      TypedAllocator::Deallocate(alloc_, hash_table_->bank_ptrs[i],
+                                  value_len_ * hash_table_->initial_bank_size);
+      TypedAllocator::Deallocate(alloc_, hash_table_->existence_flag_ptrs[i],
+                                  hash_table_->initial_bank_size);
+    }
+    if (hash_table_->mem_bank_num != 0) {
+      auto num_elements = hash_table_->mem_bank_num *
+                          (config_.block_num * (1 + config_.slot_num));
+      TypedAllocator::Deallocate(alloc_, hash_table_->d_bank_ptrs,
+                                  num_elements);
+      TypedAllocator::Deallocate(alloc_, hash_table_->d_existence_flag_ptrs,
+                                  num_elements);
+    }
+    delete hash_table_;
+    // }
   }
 
   TF_DISALLOW_COPY_AND_ASSIGN(GPUHashMapKV);
@@ -267,7 +267,8 @@ class GPUHashMapKV : public KVInterface<K, V> {
                      bool is_use_default_value_tensor, size_t n,
                      const Eigen::GpuDevice& device) override {
     functor::KvLookupKey<Eigen::GpuDevice, K, V>()(
-        keys, val, n, value_len_, static_hash_table_, device.stream());
+        keys, val, n, value_len_, static_hash_table_,
+        default_v, default_v_num, is_use_default_value_tensor, device.stream());
     return Status::OK();
   }
 
