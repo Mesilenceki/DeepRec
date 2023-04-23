@@ -72,21 +72,16 @@ namespace functor {
 
 template <typename Device, typename Key, typename V>
 struct KvLookupKey {
-  void operator()(const Key* key_first,
-                  V* value_first,
-                  int32 num_items,
-                  int32 dimension,
-                  GPUStaticHashTable<Key, V>* hash_table,
+  void operator()(const Key* keys, V* vals, int32 num_items, int32 dimension,
+                  GPUStaticHashTable<Key, V>* hash_table, V* default_v,
+                  int32 default_v_num, bool is_use_default_value_tensor,
                   cudaStream_t stream);
 };
 
 template <typename Device, typename Key, typename V>
 struct KvInitStaticMap {
-  void operator()(const Key* key_first,
-                  GPUStaticHashTable<Key, V>* hash_table,
-                  int32 num_items,
-                  int32 dimension,
-                  cudaStream_t stream);
+  void operator()(const Key* keys, GPUStaticHashTable<Key, V>* hash_table,
+                  int32 num_items, int32 dimension, cudaStream_t stream);
 };
 
 template <typename Device, typename Key, typename V>

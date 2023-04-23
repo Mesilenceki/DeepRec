@@ -84,9 +84,7 @@ class GroupEmbeddingVarLookupOp
   ~GroupEmbeddingVarLookupOp() { delete[] occupy_flag_; }
 
   void Compute(OpKernelContext* ctx) override {
-    EmbeddingVar<TFKey, TValue>* ev = nullptr;
     const auto& device = ctx->eigen_device<GPUDevice>();
-    TValue* default_v = nullptr;
 
     const Tensor& dense_shape_tensor = ctx->input(this->num_lookups_ * 4);
     auto dense_shape = dense_shape_tensor.flat<int>().data();
@@ -96,7 +94,7 @@ class GroupEmbeddingVarLookupOp
     tensor_list.reserve(this->num_lookups_);
 
     // for (size_t i = 0; i < this->num_lookups_; ++i) {
-    auto do_compute = [this, &default_v, &tensor_list, ctx, device, ev, batch_size](int i) {
+    auto do_compute = [this, &tensor_list, ctx, device, batch_size](int i) {
       const Tensor& sp_values_tensor = ctx->input(this->num_lookups_ + i);
       auto sp_values = sp_values_tensor.flat<TFKey>();
       int64 N = sp_values_tensor.NumElements();
@@ -105,8 +103,11 @@ class GroupEmbeddingVarLookupOp
       auto sp_indices = sp_indices_tensor.flat<int64>().data();
       int nnz = sp_indices_tensor.shape().dim_size(0);
 
+      EmbeddingVar<TFKey, TValue>* ev = nullptr;
       OP_REQUIRES_OK(ctx, LookupResource(ctx, HandleFromInput(ctx, i), &ev));
       core::ScopedUnref unref_me(ev);
+
+      TValue* default_v = nullptr;
       if (is_use_default_value_tensor_) {
         default_v = (TValue*)ctx->input(5 * this->num_lookups_).data();
       } else {
@@ -279,7 +280,6 @@ class GroupEmbeddingVarLookupOp
     } else {
       this->template compute<true, Sqrtn>(batch_size, device.stream());
     }
-
   }
 
  private:

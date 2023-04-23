@@ -5415,7 +5415,8 @@ tf_kernel_library(
 
 tf_cuda_library(
     name = "fused_embedding_common_cuh",
-    hdrs = ["fused_embedding/fused_embedding_common.cu.h"],
+    hdrs = ["fused_embedding/fused_embedding_common.cu.h",
+            "group_lookup_common.h",],
 )
 
 tf_kernel_library(
