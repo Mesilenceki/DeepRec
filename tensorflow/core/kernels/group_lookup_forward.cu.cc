@@ -19,6 +19,7 @@ limitations under the License.
 
 #include <cuda_runtime.h>
 
+#include "tensorflow/core/kernels/group_lookup_common.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_event_mgr.h"
 #include "tensorflow/core/framework/embedding/embedding_var.h"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -78,8 +79,6 @@ class GroupEmbeddingVarLookupOp
         return Status::OK();
       };
     }
-
-    tensor_list_.reserve(this->num_lookups_);
   }
 
   ~GroupEmbeddingVarLookupOp() { delete[] occupy_flag_; }
@@ -93,7 +92,11 @@ class GroupEmbeddingVarLookupOp
     auto dense_shape = dense_shape_tensor.flat<int>().data();
     int batch_size = dense_shape[0];
 
-    for (size_t i = 0; i < this->num_lookups_; ++i) {
+    std::vector<Tensor> tensor_list;
+    tensor_list.reserve(this->num_lookups_);
+
+    // for (size_t i = 0; i < this->num_lookups_; ++i) {
+    auto do_compute = [this, &default_v, &tensor_list, ctx, device, ev, batch_size](int i) {
       const Tensor& sp_values_tensor = ctx->input(this->num_lookups_ + i);
       auto sp_values = sp_values_tensor.flat<TFKey>();
       int64 N = sp_values_tensor.NumElements();
@@ -264,8 +267,10 @@ class GroupEmbeddingVarLookupOp
       this->lookuper_.set(i, out_base, op_output, values_offset, nnz,
                           sp_weights);
 
-      tensor_list_.emplace_back(out_tensor);
-    }
+      tensor_list.emplace_back(out_tensor);
+    };
+
+    ParallelFor(do_compute, this->num_lookups_, ctx->device()->tensorflow_cpu_worker_threads()->workers);
 
     if (this->combiner_ == "sum") {
       this->template compute<true, Sum>(batch_size, device.stream());
@@ -275,11 +280,9 @@ class GroupEmbeddingVarLookupOp
       this->template compute<true, Sqrtn>(batch_size, device.stream());
     }
 
-    tensor_list_.clear();
   }
 
  private:
-  std::vector<Tensor> tensor_list_;
   std::map<uint64, int64> hash_map_;
   std::function<TValue*(TValue*, TFKey, int64, int64, int64)> get_default_v_fn_;
   std::function<Status(EmbeddingVar<TFKey, TValue>*, const TFKey* key, TValue*,

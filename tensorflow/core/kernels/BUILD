@@ -5350,6 +5350,7 @@ tf_kernel_library(
 
 tf_kernel_library(
     name = "group_embedding_ops",
+    hdrs = ["group_lookup_common.h",],
     gpu_srcs = ["group_lookup_forward_base_ops.cu.h",
                 "group_lookup_backward_base_ops.cu.h",
                 "group_lookup_forward.cu.cc",
