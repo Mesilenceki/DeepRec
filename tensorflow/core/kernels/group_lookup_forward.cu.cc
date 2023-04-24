@@ -89,12 +89,14 @@ class GroupEmbeddingVarLookupOp
     const Tensor& dense_shape_tensor = ctx->input(this->num_lookups_ * 4);
     auto dense_shape = dense_shape_tensor.flat<int>().data();
     int batch_size = dense_shape[0];
-
+    // auto lookuper = this->object_pool_.malloc();
+    GroupEmbeddingLookupForWard<TKey, TValue> lookuper;
+    lookuper.initialize(this->num_lookups_, this->dimension_, this->max_norm_);
     std::vector<Tensor> tensor_list;
-    tensor_list.reserve(this->num_lookups_);
+    tensor_list.resize(this->num_lookups_);
 
     // for (size_t i = 0; i < this->num_lookups_; ++i) {
-    auto do_compute = [this, &tensor_list, ctx, device, batch_size](int i) {
+    auto do_compute = [this, &tensor_list, &lookuper, ctx, device, batch_size](int i) {
       const Tensor& sp_values_tensor = ctx->input(this->num_lookups_ + i);
       auto sp_values = sp_values_tensor.flat<TFKey>();
       int64 N = sp_values_tensor.NumElements();
@@ -265,20 +267,20 @@ class GroupEmbeddingVarLookupOp
             const_cast<TValue*>(sp_weights_tensor.flat<TValue>().data());
       }
       // std::cout << " ======== " << this->ignore_weights_ << std::endl;
-      this->lookuper_.set(i, out_base, op_output, values_offset, nnz,
+      lookuper.set(i, out_base, op_output, values_offset, nnz,
                           sp_weights);
 
-      tensor_list.emplace_back(out_tensor);
+      tensor_list[i] = out_tensor;
     };
 
     ParallelFor(do_compute, this->num_lookups_, ctx->device()->tensorflow_cpu_worker_threads()->workers);
 
     if (this->combiner_ == "sum") {
-      this->template compute<true, Sum>(batch_size, device.stream());
+      this->template compute<true, Sum>(lookuper, batch_size, device.stream());
     } else if (this->combiner_ == "mean") {
-      this->template compute<true, Mean>(batch_size, device.stream());
+      this->template compute<true, Mean>(lookuper, batch_size, device.stream());
     } else {
-      this->template compute<true, Sqrtn>(batch_size, device.stream());
+      this->template compute<true, Sqrtn>(lookuper, batch_size, device.stream());
     }
   }
 
@@ -321,6 +323,8 @@ class GroupVariableLookupOp
     auto dense_shape = dense_shape_tensor.flat<int>().data();
     int batch_size = dense_shape[0];
 
+    GroupEmbeddingLookupForWard<TKey, TValue> lookuper;
+    lookuper.initialize(this->num_lookups_, this->dimension_, this->max_norm_);
     for (int i = 0; i < this->num_lookups_; ++i) {
       const Tensor& emb_variable_tensor = ctx->input(i);
       const Tensor& sp_values_tensor = ctx->input(this->num_lookups_ + i);
@@ -359,7 +363,7 @@ class GroupVariableLookupOp
             const_cast<TValue*>(sp_weights_tensor.flat<TValue>().data());
       }
 
-      this->lookuper_.set(i,
+      lookuper.set(i,
                           const_cast<TValue*>(reinterpret_cast<const TValue*>(
                               emb_variable_tensor.flat<TValue>().data())),
                           emb_vectors, values_offset, nnz, sp_weights,
@@ -368,11 +372,11 @@ class GroupVariableLookupOp
                           emb_row_size);
     }
     if (this->combiner_ == "sum") {
-      this->template compute<false, Sum>(batch_size, stream);
+      this->template compute<false, Sum>(lookuper, batch_size, stream);
     } else if (this->combiner_ == "mean") {
-      this->template compute<false, Mean>(batch_size, stream);
+      this->template compute<false, Mean>(lookuper, batch_size, stream);
     } else {
-      this->template compute<false, Sqrtn>(batch_size, stream);
+      this->template compute<false, Sqrtn>(lookuper, batch_size, stream);
     }
   }
 };

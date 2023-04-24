@@ -18,6 +18,8 @@ limitations under the License.
 #include <cooperative_groups.h>
 #include <cuda_runtime.h>
 
+// #include <boost/pool/object_pool.hpp>
+
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/kernels/fused_embedding/fused_embedding_common.cu.h"
 #include "tensorflow/core/kernels/training_op_helpers.h"
@@ -25,11 +27,13 @@ limitations under the License.
 #include "tensorflow/stream_executor/stream_executor.h"
 
 namespace tensorflow {
-
-namespace {
-
 template <typename TKey, typename TValue>
 struct GroupEmbeddingForWardArgs {
+  // explicit GroupEmbeddingForWardArgs(TValue* emb_variable, TValue* emb_vector,
+  //     int* offset_indices, int nnz, TValue* sp_weights,
+  //     TKey* sp_values, int emb_row_size): emb_variable_(emb_variable),
+  //     emb_vector_(emb_vector), sp_weights_(sp_weights), sp_values_(sp_values),
+  //     offset_indices_(offset_indices), nnz_(nnz), emb_row_size_(emb_row_size) {}
   TValue* emb_variable_;
   TValue* emb_vector_;
   TValue* sp_weights_;
@@ -38,6 +42,8 @@ struct GroupEmbeddingForWardArgs {
   int nnz_;
   int emb_row_size_;
 };
+
+namespace {
 
 __global__ void SetToIntMaxSTG128(const int batch_size, int* values_offset) {
   const int thread_offset = 4 * (blockIdx.x * blockDim.x + threadIdx.x);
@@ -531,7 +537,7 @@ class GroupEmbeddingLookupForWard {
     ev_nums_ = num_lookups;
     args_size_ = sizeof(GroupEmbeddingForWardArgs<TKey, TValue>);
     CK_CUDA_THROW_(cudaMalloc(&d_args_, args_size_ * num_lookups));
-    h_args_.resize(ev_nums_);
+    h_args_.resize(num_lookups);
   }
 
   ~GroupEmbeddingLookupForWard() {
@@ -594,55 +600,56 @@ class GroupEmbeddingLookupForwardBaseOp : public OpKernel {
     OP_REQUIRES_OK(c, c->GetAttr("dimension", &dimension_));
     OP_REQUIRES_OK(c, c->GetAttr("max_norm", &max_norm_));
     OP_REQUIRES_OK(c, c->GetAttr("ignore_weights", &ignore_weights_));
-    lookuper_.initialize(num_lookups_, dimension_, max_norm_);
+    // object_pool_.reset(boost::object_pool<GroupEmbeddingLookupForWard, CustomAllocator>(200));
   }
 
   template <bool isEv, Combiner combiner>
-  inline void compute(const int batch_size, cudaStream_t stream) {
+  inline void compute(GroupEmbeddingLookupForWard<TKey, TValue>& lookuper, const int batch_size,    
+                      cudaStream_t stream) {
     if (isEv) {
       if (ignore_weights_) {
         if (dimension_ <= 2) {
-          lookuper_.Lookup(EmbeddingVarComputeFn<TKey, TValue, combiner, 2>,
+          lookuper.Lookup(EmbeddingVarComputeFn<TKey, TValue, combiner, 2>,
                            batch_size, 2, stream);
         } else if (dimension_ <= 4) {
-          lookuper_.Lookup(EmbeddingVarComputeFn<TKey, TValue, combiner, 4>,
+          lookuper.Lookup(EmbeddingVarComputeFn<TKey, TValue, combiner, 4>,
                            batch_size, 4, stream);
         } else if (dimension_ <= 8) {
-          lookuper_.Lookup(EmbeddingVarComputeFn<TKey, TValue, combiner, 8>,
+          lookuper.Lookup(EmbeddingVarComputeFn<TKey, TValue, combiner, 8>,
                            batch_size, 8, stream);
         } else if (dimension_ <= 16) {
-          lookuper_.Lookup(EmbeddingVarComputeFn<TKey, TValue, combiner, 16>,
+          lookuper.Lookup(EmbeddingVarComputeFn<TKey, TValue, combiner, 16>,
                            batch_size, 16, stream);
         } else if (dimension_ <= 32) {
-          lookuper_.Lookup(EmbeddingVarComputeFn<TKey, TValue, combiner, 32>,
+          lookuper.Lookup(EmbeddingVarComputeFn<TKey, TValue, combiner, 32>,
                            batch_size, 32, stream);
         } else {
-          lookuper_.Lookup(NormalEmbeddingVarComputeFn<TKey, TValue, combiner>,
+          lookuper.Lookup(NormalEmbeddingVarComputeFn<TKey, TValue, combiner>,
                            batch_size, dimension_, stream);
         }
       } else {
         if (dimension_ <= 2) {
-          lookuper_.Lookup(
+          lookuper.Lookup(
               WeightedEmbeddingVarComputeFn<TKey, TValue, combiner, 2>,
               batch_size, 2, stream);
         } else if (dimension_ <= 4) {
-          lookuper_.Lookup(
+          lookuper.Lookup(
               WeightedEmbeddingVarComputeFn<TKey, TValue, combiner, 4>,
               batch_size, 4, stream);
         } else if (dimension_ <= 8) {
-          lookuper_.Lookup(
+          lookuper.Lookup(
               WeightedEmbeddingVarComputeFn<TKey, TValue, combiner, 8>,
               batch_size, 8, stream);
         } else if (dimension_ <= 16) {
-          lookuper_.Lookup(
+          lookuper.Lookup(
               WeightedEmbeddingVarComputeFn<TKey, TValue, combiner, 16>,
               batch_size, 16, stream);
         } else if (dimension_ <= 32) {
-          lookuper_.Lookup(
+          lookuper.Lookup(
               WeightedEmbeddingVarComputeFn<TKey, TValue, combiner, 32>,
               batch_size, 32, stream);
         } else {
-          lookuper_.Lookup(
+          lookuper.Lookup(
               NormalWeightedEmbeddingVarComputeFn<TKey, TValue, combiner>,
               batch_size, dimension_, stream);
         }
@@ -650,44 +657,44 @@ class GroupEmbeddingLookupForwardBaseOp : public OpKernel {
     } else {
       if (ignore_weights_) {
         if (dimension_ <= 2) {
-          lookuper_.Lookup(VariableComputeFn<TKey, TValue, combiner, 2>,
+          lookuper.Lookup(VariableComputeFn<TKey, TValue, combiner, 2>,
                            batch_size, 2, stream);
         } else if (dimension_ <= 4) {
-          lookuper_.Lookup(VariableComputeFn<TKey, TValue, combiner, 4>,
+          lookuper.Lookup(VariableComputeFn<TKey, TValue, combiner, 4>,
                            batch_size, 4, stream);
         } else if (dimension_ <= 8) {
-          lookuper_.Lookup(VariableComputeFn<TKey, TValue, combiner, 8>,
+          lookuper.Lookup(VariableComputeFn<TKey, TValue, combiner, 8>,
                            batch_size, 8, stream);
         } else if (dimension_ <= 16) {
-          lookuper_.Lookup(VariableComputeFn<TKey, TValue, combiner, 16>,
+          lookuper.Lookup(VariableComputeFn<TKey, TValue, combiner, 16>,
                            batch_size, 16, stream);
         } else if (dimension_ <= 32) {
-          lookuper_.Lookup(VariableComputeFn<TKey, TValue, combiner, 32>,
+          lookuper.Lookup(VariableComputeFn<TKey, TValue, combiner, 32>,
                            batch_size, 32, stream);
         } else {
-          lookuper_.Lookup(NormalVariableComputeFn<TKey, TValue, combiner>,
+          lookuper.Lookup(NormalVariableComputeFn<TKey, TValue, combiner>,
                            batch_size, dimension_, stream);
         }
       } else {
         if (dimension_ <= 2) {
-          lookuper_.Lookup(WeightedVariableComputeFn<TKey, TValue, combiner, 2>,
+          lookuper.Lookup(WeightedVariableComputeFn<TKey, TValue, combiner, 2>,
                            batch_size, 2, stream);
         } else if (dimension_ <= 4) {
-          lookuper_.Lookup(WeightedVariableComputeFn<TKey, TValue, combiner, 4>,
+          lookuper.Lookup(WeightedVariableComputeFn<TKey, TValue, combiner, 4>,
                            batch_size, 4, stream);
         } else if (dimension_ <= 8) {
-          lookuper_.Lookup(WeightedVariableComputeFn<TKey, TValue, combiner, 8>,
+          lookuper.Lookup(WeightedVariableComputeFn<TKey, TValue, combiner, 8>,
                            batch_size, 8, stream);
         } else if (dimension_ <= 16) {
-          lookuper_.Lookup(
+          lookuper.Lookup(
               WeightedVariableComputeFn<TKey, TValue, combiner, 16>, batch_size,
               16, stream);
         } else if (dimension_ <= 32) {
-          lookuper_.Lookup(
+          lookuper.Lookup(
               WeightedVariableComputeFn<TKey, TValue, combiner, 32>, batch_size,
               32, stream);
         } else {
-          lookuper_.Lookup(
+          lookuper.Lookup(
               NormalWeightedVariableComputeFn<TKey, TValue, combiner>,
               batch_size, dimension_, stream);
         }
@@ -696,7 +703,8 @@ class GroupEmbeddingLookupForwardBaseOp : public OpKernel {
   }
 
  protected:
-  GroupEmbeddingLookupForWard<TKey, TValue> lookuper_;
+  // std::unique_ptr<boost::object_pool<GroupEmbeddingLookupForWard, CustomAllocator>> object_pool_;
+  // GroupEmbeddingLookupForWard<TKey, TValue> lookuper;
   std::string combiner_;
   float max_norm_;
   int num_lookups_;
