@@ -29,6 +29,7 @@ load(
 load(
     "//tensorflow/core/platform:default/build_config.bzl",
     "tf_kernel_tests_linkstatic",
+    "tf_additional_api_compatible_defines",
 )
 load(
     "//tensorflow/core/platform:default/build_config_root.bzl",
@@ -9099,6 +9100,7 @@ tf_kernel_library(
 tf_kernel_library(
     name = "segment_reduction_ali_ops",
     prefix = "segment_reduction_ali_ops",
+    defines = tf_additional_api_compatible_defines(),
     deps = MATH_DEPS,
 )
 

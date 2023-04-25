@@ -138,6 +138,8 @@ class SparseSegmentReductionSumWithNumSegmentsAliOp
             true /* has_num_segments */, T(0) /* default_value */) {}
 };
 
+#ifndef TF_API_COMPATIBLE_1150
+
 #define REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_SEGMENT_ID_TYPE(type, index_type) \
   REGISTER_CPU_SPARSE_KERNELS(type, index_type, int32)                         \
   REGISTER_CPU_SPARSE_KERNELS(type, index_type, int64)
@@ -205,6 +207,72 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE);
 TF_CALL_REAL_NUMBER_TYPES(REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE);
 #undef REGISTER_CPU_SPARSE_KERNELS
 
+#undef REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE
+#undef REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_SEGMENT_ID_TYPE
+
+#else
+
+#define REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE(type)        \
+  REGISTER_CPU_SPARSE_KERNELS(type, int32)                           \
+  REGISTER_CPU_SPARSE_KERNELS(type, int64)
+
+#define REGISTER_CPU_SPARSE_KERNELS(type, index_type, segment_ids_type) \
+  REGISTER_KERNEL_BUILDER(                                              \
+      Name("SparseSegmentSum")                                          \
+          .Device(DEVICE_CPU)                                           \
+          .TypeConstraint<type>("T")                                    \
+          .TypeConstraint<index_type>("Tidx"),                          \
+      SparseSegmentReductionSumAliOp<CPUDevice, type, index_type,       \
+                                     int32>);                           \
+  REGISTER_KERNEL_BUILDER(                                              \
+      Name("SparseSegmentSumWithNumSegments")                           \
+          .Device(DEVICE_CPU)                                           \
+          .TypeConstraint<type>("T")                                    \
+          .TypeConstraint<index_type>("Tidx"),                          \
+      SparseSegmentReductionSumWithNumSegmentsAliOp<                    \
+          CPUDevice, type, index_type, int32>);
+TF_CALL_REAL_NUMBER_TYPES(REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE);
+#undef REGISTER_CPU_SPARSE_KERNELS
+
+#define REGISTER_CPU_SPARSE_KERNELS(type, index_type, segment_ids_type) \
+  REGISTER_KERNEL_BUILDER(                                              \
+      Name("SparseSegmentMean")                                         \
+          .Device(DEVICE_CPU)                                           \
+          .TypeConstraint<type>("T")                                    \
+          .TypeConstraint<index_type>("Tidx"),                          \
+      SparseSegmentReductionMeanAliOp<CPUDevice, type, index_type,      \
+                                      int32>);                          \
+  REGISTER_KERNEL_BUILDER(                                              \
+      Name("SparseSegmentMeanWithNumSegments")                          \
+          .Device(DEVICE_CPU)                                           \
+          .TypeConstraint<type>("T")                                    \
+          .TypeConstraint<index_type>("Tidx"),                          \
+      SparseSegmentReductionMeanWithNumSegmentsAliOp<                   \
+          CPUDevice, type, index_type, int32>);
+TF_CALL_REAL_NUMBER_TYPES(REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE);
+#undef REGISTER_CPU_SPARSE_KERNELS
+
+#define REGISTER_CPU_SPARSE_KERNELS(type, index_type, segment_ids_type) \
+  REGISTER_KERNEL_BUILDER(                                              \
+      Name("SparseSegmentSqrtN")                                        \
+          .Device(DEVICE_CPU)                                           \
+          .TypeConstraint<type>("T")                                    \
+          .TypeConstraint<index_type>("Tidx"),                          \
+      SparseSegmentReductionSqrtNAliOp<CPUDevice, type, index_type,     \
+                                       int32>);              \
+  REGISTER_KERNEL_BUILDER(                                              \
+      Name("SparseSegmentSqrtNWithNumSegments")                         \
+          .Device(DEVICE_CPU)                                           \
+          .TypeConstraint<type>("T")                                    \
+          .TypeConstraint<index_type>("Tidx"),                          \
+      SparseSegmentReductionSqrtNWithNumSegmentsAliOp<                  \
+          CPUDevice, type, index_type, int32>);
+TF_CALL_REAL_NUMBER_TYPES(REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE);
+#undef REGISTER_CPU_SPARSE_KERNELS
+
+#undef REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE
+#endif // TF_API_COMPATIBLE_1150
+
 template <class T, typename Tindex, typename Tsegment>
 class SparseSegmentGradAliOpBase : public OpKernel {
  public:
@@ -253,6 +321,8 @@ class SparseSegmentSqrtNGradAliOp
                                                         true /*is_sqrtn*/) {}
 };
 
+#ifndef TF_API_COMPATIBLE_1150
+
 #define REGISTER_CPU_SPARSE_KERNELS(type, index_type, segment_ids_type) \
   REGISTER_KERNEL_BUILDER(                                              \
       Name("SparseSegmentMeanGrad")                                     \
@@ -277,4 +347,35 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE);
 
 #undef REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE
 #undef REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_SEGMENT_ID_TYPE
+
+#else
+
+#define REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE(type)        \
+  REGISTER_CPU_SPARSE_KERNELS(type, int32)                           \
+  REGISTER_CPU_SPARSE_KERNELS(type, int64)
+
+#define REGISTER_CPU_SPARSE_KERNELS(type, index_type)                   \
+  REGISTER_KERNEL_BUILDER(                                              \
+      Name("SparseSegmentMeanGrad")                                     \
+          .Device(DEVICE_CPU)                                           \
+          .TypeConstraint<type>("T")                                    \
+          .TypeConstraint<index_type>("Tidx"),                          \
+      SparseSegmentMeanGradAliOp<type, index_type, int32>);
+TF_CALL_REAL_NUMBER_TYPES(REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE);
+#undef REGISTER_CPU_SPARSE_KERNELS
+
+#define REGISTER_CPU_SPARSE_KERNELS(type, index_type)                   \
+  REGISTER_KERNEL_BUILDER(                                              \
+      Name("SparseSegmentSqrtNGrad")                                    \
+          .Device(DEVICE_CPU)                                           \
+          .TypeConstraint<type>("T")                                    \
+          .TypeConstraint<index_type>("Tidx"),                          \
+      SparseSegmentSqrtNGradAliOp<type, index_type, int32>);
+TF_CALL_REAL_NUMBER_TYPES(REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE);
+#undef REGISTER_CPU_SPARSE_KERNELS
+
+#undef REGISTER_CPU_SPARSE_KERNELS_FOR_EACH_INDEX_TYPE
+
+#endif //TF_API_COMPATIBLE_1150
+
 }  // namespace tensorflow
