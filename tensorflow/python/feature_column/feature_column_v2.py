@@ -4238,15 +4238,17 @@ class CutoffCategoricalColumn(
 @contextlib.contextmanager
 def group_embedding_column_scope(name='', params_num_per_group=sys.maxsize):
   global_group_embedding_scope = group_embedding_column._global_group_embedding_scope_list()
-  group_id = group_embedding_column._current_group_id()
-  if name == '':
-    name = "group_embedding_column_scope_{}".format(group_id)
-    group_id +=1
+  if name != '':
+    name = "group_embedding_column_scope_{}".format(name)
   else:
-     name = "group_embedding_column_scope_{}".format(name)
-  fusion_embedding_scope = GroupEmbeddingScope(name, params_num_per_group)
-  global_group_embedding_scope.append(fusion_embedding_scope)
-  yield global_group_embedding_scope 
+    name = "group_embedding_column_scope"
+  if len(global_group_embedding_scope) == 0:
+    fusion_embedding_scope = GroupEmbeddingScope(name, params_num_per_group)
+    global_group_embedding_scope.append(fusion_embedding_scope)
+  else:
+    fusion_embedding_scope = global_group_embedding_scope.pop(-1)
+    global_group_embedding_scope.append(fusion_embedding_scope)
+  yield fusion_embedding_scope 
 
 class GroupEmbeddingScope(group_embedding_column.GroupEmbeddingScopeBase):
   def __init__(self, name=None, params_num_per_group=sys.maxsize):
@@ -4264,17 +4266,15 @@ class GroupEmbeddingScope(group_embedding_column.GroupEmbeddingScopeBase):
                       "given {}".format(embedding_column))
     self.embedding_columns.append(embedding_column)
   
-  def _get_dense_tensor(self, filter_ec, inputs, 
+  def _get_dense_tensor(self, admitted_ec, inputs, 
       weight_collections=None, trainable=None):
     embedding_weights = []
     sp_ids = []
     combiners = []
     output_tensors = []
-    sequence_lengths = [0 for _ in range(len(self.embedding_columns))]
+    sequence_lengths = [0 for _ in range(len(admitted_ec))]
     is_sequence = False
-    for index, ec in enumerate(self.embedding_columns): 
-      if ec in filter_ec:
-        continue
+    for index, ec in enumerate(admitted_ec): 
       sp_id = ec.categorical_column._get_sparse_tensors(
           inputs, weight_collections, trainable).id_tensor
       #Special logic for sequence feature_column
@@ -4289,8 +4289,8 @@ class GroupEmbeddingScope(group_embedding_column.GroupEmbeddingScopeBase):
         embedding_weights.append(embedding_weight)
 
     output_tensors.extend(embedding_ops.group_embedding_lookup_sparse(
-                              embedding_weights, sp_ids, combiners, 
-                              is_sequence=is_sequence, params_num_per_group=self.params_num_per_group))
+                              embedding_weights, sp_ids, combiners, is_sequence=is_sequence,
+                              params_num_per_group=self.params_num_per_group))
     return output_tensors, sequence_lengths
 
 class EmbeddingColumn(
