@@ -504,67 +504,68 @@ def build_feature_columns(data_location=None):
         'UID', uid_file, default_value=0)
     ev_opt = None
     if not args.tf:
-        '''Feature Elimination of EmbeddingVariable Feature'''
-        if args.ev_elimination == 'gstep':
-            # Feature elimination based on global steps
-            evict_opt = tf.GlobalStepEvict(steps_to_live=4000)
-        elif args.ev_elimination == 'l2':
-            # Feature elimination based on l2 weight
-            evict_opt = tf.L2WeightEvict(l2_weight_threshold=1.0)
-        else:
-            evict_opt = None
-        '''Feature Filter of EmbeddingVariable Feature'''
-        if args.ev_filter == 'cbf':
-            # CBF-based feature filter
-            filter_option = tf.CBFFilter(filter_freq=3,
-                                         max_element_size=2**30,
-                                         false_positive_probability=0.01,
-                                         counter_type=tf.int64)
-        elif args.ev_filter == 'counter':
-            # Counter-based feature filter
-            filter_option = tf.CounterFilter(filter_freq=3)
-        else:
-            filter_option = None
-        ev_opt = tf.EmbeddingVariableOption(evict_option=evict_opt,
-                                            filter_option=filter_option)
+        with tf.feature_column.group_embedding_column_scope():
+            '''Feature Elimination of EmbeddingVariable Feature'''
+            if args.ev_elimination == 'gstep':
+                # Feature elimination based on global steps
+                evict_opt = tf.GlobalStepEvict(steps_to_live=4000)
+            elif args.ev_elimination == 'l2':
+                # Feature elimination based on l2 weight
+                evict_opt = tf.L2WeightEvict(l2_weight_threshold=1.0)
+            else:
+                evict_opt = None
+            '''Feature Filter of EmbeddingVariable Feature'''
+            if args.ev_filter == 'cbf':
+                # CBF-based feature filter
+                filter_option = tf.CBFFilter(filter_freq=3,
+                                            max_element_size=2**30,
+                                            false_positive_probability=0.01,
+                                            counter_type=tf.int64)
+            elif args.ev_filter == 'counter':
+                # Counter-based feature filter
+                filter_option = tf.CounterFilter(filter_freq=3)
+            else:
+                filter_option = None
+            ev_opt = tf.EmbeddingVariableOption(evict_option=evict_opt,
+                                                filter_option=filter_option)
 
-        if args.ev:
-            '''Embedding Variable Feature with feature_column API'''
-            uid_cate_column = tf.feature_column.categorical_column_with_embedding(
-                'UID', dtype=tf.string, ev_option=ev_opt)
-        elif args.adaptive_emb:
-            '''            Adaptive Embedding Feature Part 2 of 2
-            Expcet the follow code, a dict, 'adaptive_mask_tensors', is need as the input of
-            'tf.feature_column.input_layer(adaptive_mask_tensors=adaptive_mask_tensors)'.
-            For column 'COL_NAME',the value of adaptive_mask_tensors['$COL_NAME'] is a int32
-            tensor with shape [batch_size].
-            '''
-            uid_cate_column = tf.feature_column.categorical_column_with_adaptive_embedding(
-                'UID',
-                hash_bucket_size=100000,
-                dtype=tf.string,
-                ev_option=ev_opt)
-        elif args.dynamic_ev:
-            '''Dynamic-dimension Embedding Variable'''
-            print(
-                "Dynamic-dimension Embedding Variable isn't really enabled in model now."
-            )
-            sys.exit()
+            if args.ev:
+                '''Embedding Variable Feature with feature_column API'''
+                uid_cate_column = tf.feature_column.categorical_column_with_embedding(
+                    'UID', dtype=tf.string, ev_option=ev_opt)
+            elif args.adaptive_emb:
+                '''            Adaptive Embedding Feature Part 2 of 2
+                Expcet the follow code, a dict, 'adaptive_mask_tensors', is need as the input of
+                'tf.feature_column.input_layer(adaptive_mask_tensors=adaptive_mask_tensors)'.
+                For column 'COL_NAME',the value of adaptive_mask_tensors['$COL_NAME'] is a int32
+                tensor with shape [batch_size].
+                '''
+                uid_cate_column = tf.feature_column.categorical_column_with_adaptive_embedding(
+                    'UID',
+                    hash_bucket_size=100000,
+                    dtype=tf.string,
+                    ev_option=ev_opt)
+            elif args.dynamic_ev:
+                '''Dynamic-dimension Embedding Variable'''
+                print(
+                    "Dynamic-dimension Embedding Variable isn't really enabled in model now."
+                )
+                sys.exit()
+    with tf.feature_column.group_embedding_column_scope():
+        uid_emb_column = tf.feature_column.embedding_column(
+            uid_cate_column, dimension=EMBEDDING_DIM)
 
-    uid_emb_column = tf.feature_column.embedding_column(
-        uid_cate_column, dimension=EMBEDDING_DIM)
+        # item
+        item_cate_column = tf.feature_column.categorical_column_with_vocabulary_file(
+            'ITEM', mid_file, default_value=0)
+        category_cate_column = tf.feature_column.categorical_column_with_vocabulary_file(
+            'CATEGORY', cat_file, default_value=0)
 
-    # item
-    item_cate_column = tf.feature_column.categorical_column_with_vocabulary_file(
-        'ITEM', mid_file, default_value=0)
-    category_cate_column = tf.feature_column.categorical_column_with_vocabulary_file(
-        'CATEGORY', cat_file, default_value=0)
-
-    # history behavior
-    his_item_cate_column = tf.feature_column.sequence_categorical_column_with_vocabulary_file(
-        'HISTORY_ITEM', mid_file, default_value=0)
-    his_category_cate_column = tf.feature_column.sequence_categorical_column_with_vocabulary_file(
-        'HISTORY_CATEGORY', cat_file, default_value=0)
+        # history behavior
+        his_item_cate_column = tf.feature_column.sequence_categorical_column_with_vocabulary_file(
+            'HISTORY_ITEM', mid_file, default_value=0)
+        his_category_cate_column = tf.feature_column.sequence_categorical_column_with_vocabulary_file(
+            'HISTORY_CATEGORY', cat_file, default_value=0)
 
     return {
         'uid_emb_column': uid_emb_column,
