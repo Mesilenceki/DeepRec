@@ -4268,15 +4268,64 @@ class GroupEmbeddingScope(group_embedding_column.GroupEmbeddingScopeBase):
   
   def _get_dense_tensor(self, admitted_ec, inputs, 
       weight_collections=None, trainable=None):
+    
+    output_tensors = [None for _ in range(len(admitted_ec))]
+    non_sp_weights = []
+    sequence_lengths = [0 for _ in range(len(admitted_ec))]
+
     embedding_weights = []
     sp_ids = []
-    combiners = []
-    output_tensors = []
-    sequence_lengths = [0 for _ in range(len(admitted_ec))]
+    sp_weights = []
+    combiners = []   
     is_sequence = False
+    
+    output_mapping = []
     for index, ec in enumerate(admitted_ec): 
-      sp_id = ec.categorical_column._get_sparse_tensors(
-          inputs, weight_collections, trainable).id_tensor
+      sparse_tensor = ec.categorical_column._get_sparse_tensors(
+          inputs, weight_collections, trainable)
+      sp_id = sparse_tensor.id_tensor
+      sp_weight = sparse_tensor.weight_tensor
+      if sp_weight is None:
+        non_sp_weights.append(index)
+        continue
+      #Special logic for sequence feature_column
+      if isinstance(ec.categorical_column, fc_old._SequenceCategoricalColumn):
+        sequence_lengths[index] = fc_utils.sequence_length_from_sparse_tensor(
+            sp_id)
+        is_sequence = True
+      
+      sp_id, sp_weight = _prune_invalid_ids(sp_id, sp_weight)
+      if ec.combiner != "sum":
+        sp_id, sp_weight = _prune_invalid_weights(sp_id, sp_weight)
+
+      sp_ids.append(sp_id)
+      sp_weights.append(sp_weight)
+      combiners.append(ec.combiner)
+      with variable_scope.variable_scope(ec._var_scope_name):
+        embedding_weight = ec.create_embedding(weight_collections, trainable)
+        embedding_weights.append(embedding_weight)
+      output_mapping.append(index)
+
+    if len(output_mapping) > 0:
+      weighted_outputs = embedding_ops.group_embedding_lookup_sparse(
+                                embedding_weights, sp_ids, combiners, sp_weights, 
+                                is_sequence=is_sequence, params_num_per_group=1)
+
+      for index, output in zip(output_mapping, weighted_outputs):
+        output_tensors[index] = output
+
+    embedding_weights = []
+    sp_ids = []
+    combiners = []   
+    is_sequence = False
+    output_mapping = []
+
+    for index in non_sp_weights:
+      ec = admitted_ec[index]
+      sparse_tensor = ec.categorical_column._get_sparse_tensors(
+          inputs, weight_collections, trainable)
+      sp_id = sparse_tensor.id_tensor
+
       #Special logic for sequence feature_column
       if isinstance(ec.categorical_column, fc_old._SequenceCategoricalColumn):
         sequence_lengths[index] = fc_utils.sequence_length_from_sparse_tensor(
@@ -4287,9 +4336,16 @@ class GroupEmbeddingScope(group_embedding_column.GroupEmbeddingScopeBase):
       with variable_scope.variable_scope(ec._var_scope_name):
         embedding_weight = ec.create_embedding(weight_collections, trainable)
         embedding_weights.append(embedding_weight)
-
-    output_tensors.extend(embedding_ops.group_embedding_lookup_sparse(
-                              embedding_weights, sp_ids, combiners, is_sequence=is_sequence))
+      output_mapping.append(index)
+    
+    
+    if len(output_mapping) > 0:
+      non_weighted_outputs = embedding_ops.group_embedding_lookup_sparse(
+                              embedding_weights, sp_ids, combiners, is_sequence=is_sequence, params_num_per_group=1)
+    
+      for index, output in zip(output_mapping, non_weighted_outputs):
+        output_tensors[index] = output
+    
     return output_tensors, sequence_lengths
 
 class EmbeddingColumn(

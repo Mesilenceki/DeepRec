@@ -101,6 +101,14 @@ class GroupEmbeddingVariableLookupCpuOp
                                   embedding_var->CacheSize(),
                                   " should large than IDs in batch ", nnz));
 
+      // Tensor empty_row_indicator;
+      // Tensor reverse_index_map;
+      // Tensor filled_indices;
+      // Tensor filled_values;
+      // ParallelSparseFillEmptyRows<T>(context, input_indices, input_tensor,
+      //     input_dense_shape, &default_value, &empty_row_indicator,
+      //     &reverse_index_map, &filled_indices, &filled_values);
+
       // Stage 1
       Tensor unique_idx_tensor;
       Tensor unique_tensor;
@@ -129,6 +137,8 @@ class GroupEmbeddingVariableLookupCpuOp
                                                &batch_nums_tensor));
       auto batch_nums = batch_nums_tensor->flat<int>().data();
       memset(batch_nums, 0, batch_size * sizeof(int));
+
+      
       for (int k = 0; k < nnz; ++k) {
         int batch_id = sp_indices[k * dense_shape_tensor.NumElements()];
         batch_nums[batch_id] += 1;
@@ -238,6 +248,20 @@ class GroupEmbeddingVariableLookupCpuOp
                     _item, _weights, tmp_embedding[index], mask);
               }
             }
+
+            // if (batch_num == 0) {
+            //   __m512 _weights = _mm512_set1_ps(1.0f);
+            //   LOG(INFO) << "empty row " << i;
+
+            //   for (int d = 0; d < m_dimension; d += 16) {
+            //     int index = d / 16;
+            //     int remain = m_dimension - d;
+            //     __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
+            //     __m512 _item = _mm512_maskz_loadu_ps(mask, unique_embedding_data + d);
+            //     tmp_embedding[index] = _mm512_mask3_fmadd_ps(
+            //         _item, _weights, tmp_embedding[index], mask);
+            //   }
+            // }
 
             for (int d = 0; d < m_dimension; d += 16) {
               int index = d / 16;
@@ -414,6 +438,7 @@ class GroupVariableLookupCpuOp : public GroupLookupBaseCpuOp<TKey, TValue> {
     for (int i = 0; i < m_num_lookup; ++i) {
       const Tensor &emb_variable_tensor = ctx->input(i);
       const Tensor &sp_values_tensor = ctx->input(m_num_lookup + i);
+      auto sp_values = sp_values_tensor.flat<TKey>().data();
       int nnz = sp_values_tensor.NumElements();
       auto embedding_variable = emb_variable_tensor.flat<TValue>().data();
 
@@ -456,6 +481,14 @@ class GroupVariableLookupCpuOp : public GroupLookupBaseCpuOp<TKey, TValue> {
                                                &emb_vectors_tensor));
       auto emb_vectors = emb_vectors_tensor->flat<TValue>().data();
 
+      // Tensor empty_row_indicator;
+      // Tensor reverse_index_map;
+      // Tensor filled_indices;
+      // Tensor filled_values;
+      // ParallelSparseFillEmptyRows<T>(context, input_indices, input_tensor,
+      //     input_dense_shape, &default_value, &empty_row_indicator,
+      //     &reverse_index_map, &filled_indices, &filled_values);
+      
       // Stage 1
       Tensor unique_idx_tensor;
       Tensor unique_tensor;
@@ -480,6 +513,14 @@ class GroupVariableLookupCpuOp : public GroupLookupBaseCpuOp<TKey, TValue> {
         sp_weights =
             const_cast<TValue *>(sp_weights_tensor.flat<TValue>().data());
       }
+
+      int count = 0;
+      for (int l = 0; l < nnz; ++l) {
+        if ((sp_weights[l] < 0) || (sp_values[l] < 0)) {
+          count++;
+        }
+      }
+      // LOG(INFO) << "empty num is :" << count;
 
       int slice_bytes = nnz / batch_size * m_dimension * 1000;
       if (this->m_combiner == "mean") {
@@ -514,6 +555,20 @@ class GroupVariableLookupCpuOp : public GroupLookupBaseCpuOp<TKey, TValue> {
                     _item, _weights, tmp_embedding[index], mask);
               }
             }
+
+            // if (batch_num == 0) {
+            //   __m512 _weights = _mm512_set1_ps(1.0f);
+            //   LOG(INFO) << "empty row " << i;
+
+            //   for (int d = 0; d < m_dimension; d += 16) {
+            //     int index = d / 16;
+            //     int remain = m_dimension - d;
+            //     __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
+            //     __m512 _item = _mm512_maskz_loadu_ps(mask, embedding_variable + d);
+            //     tmp_embedding[index] = _mm512_mask3_fmadd_ps(
+            //         _item, _weights, tmp_embedding[index], mask);
+            //   }
+            // }
 
             for (int d = 0; d < m_dimension; d += 16) {
               int index = d / 16;

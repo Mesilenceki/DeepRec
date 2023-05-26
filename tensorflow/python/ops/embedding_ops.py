@@ -1634,7 +1634,13 @@ def group_embedding_lookup_sparse(params,
         raise ValueError('params must be specified')
     if not isinstance(params, list):
         params = [params]
-
+    for index in range(len(params)):
+      if isinstance(params[index], variables.PartitionedVariable):
+        tmp_param = list(params[index])
+        if len(tmp_param) > 1:
+            raise TypeError("PartitionedVariable not support in 'group_embedding_lookup_sparse'. ")
+        params[index] = tmp_param[0]
+        
     ignore_weights = sp_weights is None
 
     if len(combiners) != len(sp_ids):

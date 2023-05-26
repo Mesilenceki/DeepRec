@@ -29,6 +29,10 @@ from tensorflow.contrib.rnn.python.ops.core_rnn_cell import _Linear
 from tensorflow.python.feature_column.feature_column import _LazyBuilder
 from tensorflow.python.feature_column import utils as fc_utils
 
+os.environ["TF_GPU_THREAD_MODE"] = "global"
+os.environ["TF_GPU_THREAD_COUNT"] = "16"
+tf.config.experimental.enable_distributed_strategy(strategy="collective")
+import horovod.tensorflow as hvd
 # Set to INFO for tracking training, default is WARN. ERROR for least messages
 tf.logging.set_verbosity(tf.logging.INFO)
 print("Using TensorFlow version %s" % (tf.__version__))
@@ -40,9 +44,9 @@ SEQ_COLUMNS = HIS_COLUMNS
 LABEL_COLUMN = ['CLICKED']
 TRAIN_DATA_COLUMNS = LABEL_COLUMN + UNSEQ_COLUMNS + SEQ_COLUMNS
 
-EMBEDDING_DIM = 18
-HIDDEN_SIZE = 18 * 2
-ATTENTION_SIZE = 18 * 2
+EMBEDDING_DIM = 16
+HIDDEN_SIZE = 16 * 2
+ATTENTION_SIZE = 16 * 2
 MAX_SEQ_LENGTH = 50
 
 
@@ -744,6 +748,7 @@ def main(tf_config=None, server=None):
         sess_config.device_filters.append("/job:ps")
     sess_config.inter_op_parallelism_threads = args.inter
     sess_config.intra_op_parallelism_threads = args.intra
+    sess_config.gpu_options.visible_device_list = str(hvd.local_rank())
 
     # Session hooks
     hooks = []
@@ -752,6 +757,7 @@ def main(tf_config=None, server=None):
         '''Smart staged Feature'''
         next_element = tf.staged(next_element, num_threads=4, capacity=40)
         sess_config.graph_options.optimizer_options.do_smart_stage = True
+        sess_config.graph_options.optimizer_options.stage_subgraph_on_cpu = True
         hooks.append(tf.make_prefetch_hook())
     if args.op_fusion and not args.tf:
         '''Auto Graph Fusion'''

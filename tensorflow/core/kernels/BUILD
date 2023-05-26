@@ -5392,7 +5392,8 @@ tf_kernel_library(
 
 tf_kernel_library(
     name = "group_embedding_ops",
-    hdrs = ["group_embedding/group_embedding_lookup_sparse_forward_base_ops.h"],
+    hdrs = ["group_embedding/group_embedding_lookup_sparse_forward_base_ops.h",
+            "group_embedding/sparse_filled_empty_row.h"],
     srcs = ["group_embedding/group_embedding_lookup_ops.cc",
             "group_embedding/group_embedding_lookup_sparse_forward_ops.cc",
             "group_embedding/group_embedding_lookup_sparse_backward_ops.cc",],
