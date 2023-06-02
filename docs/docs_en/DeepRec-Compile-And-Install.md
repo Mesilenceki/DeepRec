@@ -15,11 +15,7 @@
 
 | GCC Version | Python Version | CUDA VERSION |                           IMAGE                                 |
 | ----------- | -------------- | ------------ | --------------------------------------------------------------- |
-|    7.5.0    |    3.6.9       | CUDA 11.0.3  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu110-ubuntu18.04 |
-|    7.5.0    |    3.6.9       | CUDA 11.2.2  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu112-ubuntu18.04 |
-|    7.5.0    |    3.6.9       | CUDA 11.4.2  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu114-ubuntu18.04 |
 |    7.5.0    |    3.6.9       | CUDA 11.6.1  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu116-ubuntu18.04 |
-|    7.5.0    |    3.6.9       | CUDA 11.7.1  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu117-ubuntu18.04 |
 |    9.4.0    |    3.8.10      | CUDA 11.6.2  | alideeprec/deeprec-base:deeprec-base-gpu-py38-cu116-ubuntu20.04 |
 |    11.2.0   |    3.8.6       | CUDA 11.7.1  | alideeprec/deeprec-base:deeprec-base-gpu-py38-cu117-ubuntu22.04 |
 
@@ -112,7 +108,7 @@ pip3 install /tmp/tensorflow_pkg/tensorflow-1.15.5+${version}-cp38-cp38m-linux_x
 
 x86_64:
 ```
-alideeprec/deeprec-release:deeprec2302-cpu-py38-ubuntu20.04
+alideeprec/deeprec-release:deeprec2304-cpu-py38-ubuntu20.04
 ```
 
 arm64:
@@ -123,5 +119,5 @@ alideeprec/deeprec-release:deeprec2302-cpu-py38-ubuntu22.04-arm64
 **GPU Image with CUDA 11.6**
 
 ```
-alideeprec/deeprec-release:deeprec2302-gpu-py38-cu116-ubuntu20.04
+alideeprec/deeprec-release:deeprec2304-gpu-py38-cu116-ubuntu20.04
 ```

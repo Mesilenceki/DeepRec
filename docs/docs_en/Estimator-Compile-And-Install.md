@@ -15,11 +15,7 @@
 
 | GCC Version | Python Version | CUDA VERSION |                           IMAGE                                 |
 | ----------- | -------------- | ------------ | --------------------------------------------------------------- |
-|    7.5.0    |    3.6.9       | CUDA 11.0.3  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu110-ubuntu18.04 |
-|    7.5.0    |    3.6.9       | CUDA 11.2.2  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu112-ubuntu18.04 |
-|    7.5.0    |    3.6.9       | CUDA 11.4.2  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu114-ubuntu18.04 |
 |    7.5.0    |    3.6.9       | CUDA 11.6.1  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu116-ubuntu18.04 |
-|    7.5.0    |    3.6.9       | CUDA 11.7.1  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu117-ubuntu18.04 |
 |    9.4.0    |    3.8.10      | CUDA 11.6.2  | alideeprec/deeprec-base:deeprec-base-gpu-py38-cu116-ubuntu20.04 |
 |    11.2.0   |    3.8.6       | CUDA 11.7.1  | alideeprec/deeprec-base:deeprec-base-gpu-py38-cu117-ubuntu22.04 |
 
@@ -44,7 +40,7 @@ DeepRec provide new distributed protocols such as grpc++ and star_server, which 
 
 Source Code: [https://github.com/DeepRec-AI/estimator](https://github.com/DeepRec-AI/estimator)
 
-Develop Branch：master, Latest Release Branch: deeprec2302
+Develop Branch：master, Latest Release Branch: deeprec2304
 
 ## Estimator Build
 

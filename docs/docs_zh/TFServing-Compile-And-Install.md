@@ -14,11 +14,7 @@
 
 | GCC Version | Python Version | CUDA VERSION |                           IMAGE                                 |
 | ----------- | -------------- | ------------ | --------------------------------------------------------------- |
-|    7.5.0    |    3.6.9       | CUDA 11.0.3  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu110-ubuntu18.04 |
-|    7.5.0    |    3.6.9       | CUDA 11.2.2  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu112-ubuntu18.04 |
-|    7.5.0    |    3.6.9       | CUDA 11.4.2  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu114-ubuntu18.04 |
 |    7.5.0    |    3.6.9       | CUDA 11.6.1  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu116-ubuntu18.04 |
-|    7.5.0    |    3.6.9       | CUDA 11.7.1  | alideeprec/deeprec-base:deeprec-base-gpu-py36-cu117-ubuntu18.04 |
 |    9.4.0    |    3.8.10      | CUDA 11.6.2  | alideeprec/deeprec-base:deeprec-base-gpu-py38-cu116-ubuntu20.04 |
 |    11.2.0   |    3.8.6       | CUDA 11.7.1  | alideeprec/deeprec-base:deeprec-base-gpu-py38-cu117-ubuntu22.04 |
 
@@ -43,7 +39,7 @@
 
 代码库：[https://github.com/DeepRec-AI/serving](https://github.com/DeepRec-AI/serving)
 
-开发分支：master，最新Release分支：deeprec2302
+开发分支：master，最新Release分支：deeprec2304
 
 ## TFServing编译&打包
 
