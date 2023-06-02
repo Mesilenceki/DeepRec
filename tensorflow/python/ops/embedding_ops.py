@@ -1658,11 +1658,13 @@ def group_embedding_lookup_sparse(params,
 
     strategy = get_group_lookup_strategy()
     if strategy == DistStrategy.COLLECTIVE:
+        import horovod.tensorflow as hvd
+        total_size = hvd.size()
         for (index, param) in enumerate(params):
             if isinstance(param, variables.PartitionedVariable):
                 raise TypeError("PartitionedVariable not support in 'group_embedding_lookup_sparse'. "
                                 )
-            param.target_gpu = -1
+            param.target_gpu = index % total_size
 
         try:
             from sparse_operation_kit import experiment as sok
