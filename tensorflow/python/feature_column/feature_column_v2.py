@@ -140,6 +140,7 @@ from tensorflow.python.eager import context
 from tensorflow.python.feature_column import feature_column as fc_old
 from tensorflow.python.feature_column import utils as fc_utils
 from tensorflow.python.feature_column import group_embedding_column
+from tensorflow.python.framework.group_embedding_types import (DistStrategy,
 from tensorflow.python.feature_column import coalesced_utils
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
@@ -4289,14 +4290,14 @@ class GroupEmbeddingScope(group_embedding_column.GroupEmbeddingScopeBase):
         non_sp_weights.append(index)
         continue
       #Special logic for sequence feature_column
-      if isinstance(ec.categorical_column, fc_old._SequenceCategoricalColumn):
-        sequence_lengths[index] = fc_utils.sequence_length_from_sparse_tensor(
-            sp_id)
-        is_sequence = True
+      # if isinstance(ec.categorical_column, fc_old._SequenceCategoricalColumn):
+      #   sequence_lengths[index] = fc_utils.sequence_length_from_sparse_tensor(
+      #       sp_id)
+      #   is_sequence = True
       
-      sp_id, sp_weight = _prune_invalid_ids(sp_id, sp_weight)
-      if ec.combiner != "sum":
-        sp_id, sp_weight = _prune_invalid_weights(sp_id, sp_weight)
+      # sp_id, sp_weight = _prune_invalid_ids(sp_id, sp_weight)
+      # if ec.combiner != "sum":
+      #   sp_id, sp_weight = _prune_invalid_weights(sp_id, sp_weight)
 
       sp_ids.append(sp_id)
       sp_weights.append(sp_weight)
