@@ -24,15 +24,15 @@ from tensorflow.python.client import timeline
 import json
 
 from tensorflow.python.ops import partitioned_variables
-os.environ["TF_GPU_THREAD_MODE"] = "global"
-os.environ["TF_GPU_THREAD_COUNT"] = "16"
-import horovod.tensorflow as hvd
-tf.config.experimental.enable_distributed_strategy(strategy="collective")
+
 from tensorflow.contrib.rnn.python.ops.core_rnn_cell import _Linear
 from tensorflow.python.feature_column.feature_column import _LazyBuilder
 from tensorflow.python.feature_column import utils as fc_utils
-import contextlib
 
+os.environ["TF_GPU_THREAD_MODE"] = "global"
+os.environ["TF_GPU_THREAD_COUNT"] = "16"
+tf.config.experimental.enable_distributed_strategy(strategy="collective")
+import horovod.tensorflow as hvd
 # Set to INFO for tracking training, default is WARN. ERROR for least messages
 tf.logging.set_verbosity(tf.logging.INFO)
 print("Using TensorFlow version %s" % (tf.__version__))
@@ -280,14 +280,7 @@ class DIN():
                                                     self._uid_emb_column)
         # get embeddings of item and category
         # create embedding table
-        # create embedding table
-        if args.group_embedding and not args.tf:
-          context = tf.feature_column.group_embedding_column_scope(name="categorical")
-        else:
-          context = contextlib.nullcontext()
-
         if self._ev and not self.tf:
-          with context:
             '''Embedding Variable Feature with get embedding variable API'''
             item_embedding_var = tf.get_embedding_variable(
                 'item_embedding_var',
@@ -511,16 +504,11 @@ def build_feature_columns(data_location=None):
             "uid_voc.txt, mid_voc.txt or cat_voc does not exist in data file.")
         sys.exit()
     # uid
-
-    if args.group_embedding and not args.tf:
-        context = tf.feature_column.group_embedding_column_scope(name="categorical")
-    else:
-        context = contextlib.nullcontext()
-    with context:
-        uid_cate_column = tf.feature_column.categorical_column_with_vocabulary_file(
-            'UID', uid_file, default_value=0)
-        ev_opt = None
-        if not args.tf:
+    uid_cate_column = tf.feature_column.categorical_column_with_vocabulary_file(
+        'UID', uid_file, default_value=0)
+    ev_opt = None
+    if not args.tf:
+        with tf.feature_column.group_embedding_column_scope():
             '''Feature Elimination of EmbeddingVariable Feature'''
             if args.ev_elimination == 'gstep':
                 # Feature elimination based on global steps
@@ -567,21 +555,21 @@ def build_feature_columns(data_location=None):
                     "Dynamic-dimension Embedding Variable isn't really enabled in model now."
                 )
                 sys.exit()
-
+    with tf.feature_column.group_embedding_column_scope():
         uid_emb_column = tf.feature_column.embedding_column(
             uid_cate_column, dimension=EMBEDDING_DIM)
 
-    # item
-    item_cate_column = tf.feature_column.categorical_column_with_vocabulary_file(
-        'ITEM', mid_file, default_value=0)
-    category_cate_column = tf.feature_column.categorical_column_with_vocabulary_file(
-        'CATEGORY', cat_file, default_value=0)
+        # item
+        item_cate_column = tf.feature_column.categorical_column_with_vocabulary_file(
+            'ITEM', mid_file, default_value=0)
+        category_cate_column = tf.feature_column.categorical_column_with_vocabulary_file(
+            'CATEGORY', cat_file, default_value=0)
 
-    # history behavior
-    his_item_cate_column = tf.feature_column.sequence_categorical_column_with_vocabulary_file(
-        'HISTORY_ITEM', mid_file, default_value=0)
-    his_category_cate_column = tf.feature_column.sequence_categorical_column_with_vocabulary_file(
-        'HISTORY_CATEGORY', cat_file, default_value=0)
+        # history behavior
+        his_item_cate_column = tf.feature_column.sequence_categorical_column_with_vocabulary_file(
+            'HISTORY_ITEM', mid_file, default_value=0)
+        his_category_cate_column = tf.feature_column.sequence_categorical_column_with_vocabulary_file(
+            'HISTORY_CATEGORY', cat_file, default_value=0)
 
     return {
         'uid_emb_column': uid_emb_column,
@@ -724,7 +712,7 @@ def main(tf_config=None, server=None):
     # set directory path for checkpoint_dir
     model_dir = os.path.join(args.output_dir,
                              'model_DIN_' + str(int(time.time())))
-    checkpoint_dir = args.checkpoint if args.checkpoint else model_dir + "/" + str(hvd.rank())
+    checkpoint_dir = args.checkpoint if args.checkpoint else model_dir
     print("Saving model checkpoints to " + checkpoint_dir)
 
     # create data pipline of train & test dataset
@@ -769,6 +757,7 @@ def main(tf_config=None, server=None):
         '''Smart staged Feature'''
         next_element = tf.staged(next_element, num_threads=4, capacity=40)
         sess_config.graph_options.optimizer_options.do_smart_stage = True
+        sess_config.graph_options.optimizer_options.stage_subgraph_on_cpu = True
         hooks.append(tf.make_prefetch_hook())
     if args.op_fusion and not args.tf:
         '''Auto Graph Fusion'''
@@ -860,7 +849,7 @@ def get_arg_parser():
     parser.add_argument('--timeline',
                         help='number of steps on saving timeline. Default 0',
                         type=int,
-                        default=500)
+                        default=0)
     parser.add_argument('--protocol',
                         type=str,
                         choices=['grpc', 'grpc++', 'star_server'],
@@ -948,12 +937,6 @@ def get_arg_parser():
                         help='Whether to enable shuffle operation for Parquet Dataset. Default to False.',
                         type=boolean_string,
                         default=False)
-    parser.add_argument("--group_embedding", \
-                      help='Whether to enable Group Embedding. Defualt to None.',
-                      type=str,
-                      choices=[None, 'localized', 'collective'],
-                      default=None)
-
     return parser
 
 

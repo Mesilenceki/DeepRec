@@ -1658,7 +1658,6 @@ def group_embedding_lookup_sparse(params,
 
     strategy = get_group_lookup_strategy()
     if strategy == DistStrategy.COLLECTIVE:
-        import 
         for (index, param) in enumerate(params):
             if isinstance(param, variables.PartitionedVariable):
                 raise TypeError("PartitionedVariable not support in 'group_embedding_lookup_sparse'. "
