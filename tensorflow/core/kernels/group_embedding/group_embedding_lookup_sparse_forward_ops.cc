@@ -224,6 +224,7 @@ class GroupEmbeddingVariableLookupCpuOp
                                                int64 start, int64 end) {
           for (int64 i = start; i < end; ++i) {
 #if defined(__GNUC__) && (__GNUC__ > 6) && (__AVX512F__)
+            __m512 batch_total_weights = _mm512_set1_ps(0.0f);
             int tmp_length = (m_dimension + 15) / 16;
             __m512 tmp_embedding[tmp_length];
             for (int i = 0; i < tmp_length; ++i) {
@@ -231,14 +232,13 @@ class GroupEmbeddingVariableLookupCpuOp
             }
             int batch_offset = i == 0 ? 0 : batch_nums[i - 1];
             int batch_num = batch_nums[i] - batch_offset;
-            __m512 _bs = _mm512_set1_ps(batch_num);
             for (int j = 0; j < batch_num; ++j) {
               int unique_indice = unique_idx[batch_offset + j];
               float *u_embedding =
                   unique_embedding_data + unique_indice * m_dimension;
               __m512 _weights =
                   _mm512_set1_ps(*(sp_weights + batch_offset + j));
-              _weights = _mm512_div_ps(_weights, _bs);
+              batch_total_weights = _mm512_add_ps(batch_total_weights, _weights);
               for (int d = 0; d < m_dimension; d += 16) {
                 int index = d / 16;
                 int remain = m_dimension - d;
@@ -248,25 +248,14 @@ class GroupEmbeddingVariableLookupCpuOp
                     _item, _weights, tmp_embedding[index], mask);
               }
             }
-
-            // if (batch_num == 0) {
-            //   __m512 _weights = _mm512_set1_ps(1.0f);
-            //   LOG(INFO) << "empty row " << i;
-
-            //   for (int d = 0; d < m_dimension; d += 16) {
-            //     int index = d / 16;
-            //     int remain = m_dimension - d;
-            //     __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
-            //     __m512 _item = _mm512_maskz_loadu_ps(mask, unique_embedding_data + d);
-            //     tmp_embedding[index] = _mm512_mask3_fmadd_ps(
-            //         _item, _weights, tmp_embedding[index], mask);
-            //   }
-            // }
+            
+            if (batch_num == 0) batch_total_weights = _mm512_set1_ps(1.0f);
 
             for (int d = 0; d < m_dimension; d += 16) {
               int index = d / 16;
               int remain = m_dimension - d;
               __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
+              tmp_embedding[index] = _mm512_div_ps(tmp_embedding[index], batch_total_weights);
               _mm512_mask_storeu_ps(gather_embedding + i * m_dimension + d,
                                     mask, tmp_embedding[index]);
             }
@@ -480,14 +469,6 @@ class GroupVariableLookupCpuOp : public GroupLookupBaseCpuOp<TKey, TValue> {
       OP_REQUIRES_OK(ctx, ctx->allocate_output(i, emb_vectors_tensor_shape,
                                                &emb_vectors_tensor));
       auto emb_vectors = emb_vectors_tensor->flat<TValue>().data();
-
-      // Tensor empty_row_indicator;
-      // Tensor reverse_index_map;
-      // Tensor filled_indices;
-      // Tensor filled_values;
-      // ParallelSparseFillEmptyRows<T>(context, input_indices, input_tensor,
-      //     input_dense_shape, &default_value, &empty_row_indicator,
-      //     &reverse_index_map, &filled_indices, &filled_values);
       
       // Stage 1
       Tensor unique_idx_tensor;
@@ -531,6 +512,7 @@ class GroupVariableLookupCpuOp : public GroupLookupBaseCpuOp<TKey, TValue> {
 #if defined(__GNUC__) && (__GNUC__ > 6) && (__AVX512F__)
             int tmp_length = (m_dimension + 15) / 16;
             __m512 tmp_embedding[tmp_length];
+            __m512 batch_total_weights = _mm512_set1_ps(0.0f);
             for (int i = 0; i < tmp_length; ++i) {
               tmp_embedding[i] = _mm512_set1_ps(0.0f);
             }
@@ -541,8 +523,7 @@ class GroupVariableLookupCpuOp : public GroupLookupBaseCpuOp<TKey, TValue> {
               int unique_id = unique[unique_indice];
               __m512 _weights =
                   _mm512_set1_ps(*(sp_weights + batch_offset + j));
-              __m512 _bs = _mm512_set1_ps(batch_num);
-              _weights = _mm512_div_ps(_weights, _bs);
+              batch_total_weights = _mm512_add_ps(batch_total_weights, _weights);
               const float *embedding_ptr =
                   embedding_variable + unique_id * m_dimension;
 
@@ -555,25 +536,12 @@ class GroupVariableLookupCpuOp : public GroupLookupBaseCpuOp<TKey, TValue> {
                     _item, _weights, tmp_embedding[index], mask);
               }
             }
-
-            // if (batch_num == 0) {
-            //   __m512 _weights = _mm512_set1_ps(1.0f);
-            //   LOG(INFO) << "empty row " << i;
-
-            //   for (int d = 0; d < m_dimension; d += 16) {
-            //     int index = d / 16;
-            //     int remain = m_dimension - d;
-            //     __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
-            //     __m512 _item = _mm512_maskz_loadu_ps(mask, embedding_variable + d);
-            //     tmp_embedding[index] = _mm512_mask3_fmadd_ps(
-            //         _item, _weights, tmp_embedding[index], mask);
-            //   }
-            // }
-
+            if (batch_num == 0) batch_total_weights = _mm512_set1_ps(1.0f);
             for (int d = 0; d < m_dimension; d += 16) {
               int index = d / 16;
               int remain = m_dimension - d;
               __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
+              tmp_embedding[index] = _mm512_div_ps(tmp_embedding[index], batch_total_weights);
               _mm512_mask_storeu_ps(emb_vectors + i * m_dimension + d, mask,
                                     tmp_embedding[index]);
             }

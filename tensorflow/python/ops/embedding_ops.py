@@ -1779,8 +1779,8 @@ def group_embedding_lookup_sparse(params,
                       * params_num_per_group:(j + 1)
                       * params_num_per_group],
                   dim,
-                  ignore_weights,
-                  is_sequence,
+                  ignore_weights=ignore_weights,
+                  is_sequence=is_sequence,
                   )[0]
 
               for (idx, output) in zip(output_index[j
@@ -1797,7 +1797,7 @@ def group_embedding_lookup_sparse(params,
                   (ev_handlers[group_id])[-num_remainder:],
                   (ev_sp_values[group_id])[-num_remainder:],
                   (ev_sp_indices[group_id])[-num_remainder:],
-                  (ev_sp_weights[group_id])[-num_remainder:],
+                  sub_ev_sp_weight,
                   ev_combiners[group_id],
                   (ev_dense_shapes[group_id])[-num_remainder:],
                   dim,

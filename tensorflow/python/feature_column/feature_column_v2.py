@@ -4294,9 +4294,9 @@ class GroupEmbeddingScope(group_embedding_column.GroupEmbeddingScopeBase):
             sp_id)
         is_sequence = True
       
-      sp_id, sp_weight = _prune_invalid_ids(sp_id, sp_weight)
-      if ec.combiner != "sum":
-        sp_id, sp_weight = _prune_invalid_weights(sp_id, sp_weight)
+      # sp_id, sp_weight = _prune_invalid_ids(sp_id, sp_weight)
+      # if ec.combiner != "sum":
+      #   sp_id, sp_weight = _prune_invalid_weights(sp_id, sp_weight)
 
       sp_ids.append(sp_id)
       sp_weights.append(sp_weight)
