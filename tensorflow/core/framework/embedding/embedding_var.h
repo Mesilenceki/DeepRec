@@ -276,6 +276,19 @@ class EmbeddingVar : public ResourceBase {
           value_len_ * sizeof(V), do_work);
   }
 
+  void GetEmbeddings(const EmbeddingVarContext<GPUDevice>& context,
+                    const K* keys, V* val, int64 nums) {
+    storage_->BatchLookup(keys, val, nums, context.gpu_device);
+  }
+  
+  //Reserved for GPU Adaptive Embedding
+  // void GetEmbeddings(const EmbeddingVarContext<GPUDevice>& context,
+  //                   const K* keys, V* val, V* default_value, int64 nums,
+  //                   int32 default_v_num) {
+  //   storage_->BatchLookup(keys, val, default_value, default_v_num,
+  //                         nums, context.gpu_device);
+  // }
+
   void LookupOrCreate(K key, V* val, V* default_v, int count = 1)  {
     const V* default_value_ptr =
       (default_v == nullptr) ? default_value_ : default_v;
@@ -696,8 +709,7 @@ class EmbeddingVar : public ResourceBase {
   void Lookup(const K* key, V* val, V* default_v,
       int32 default_v_num, bool is_use_default_value_tensor,
       size_t n, const Eigen::GpuDevice& device) {
-    storage_->BatchLookup(key, val, default_v, default_v_num,
-        is_use_default_value_tensor, n, device);
+    storage_->BatchLookup(key, val, n, device);
   }
   
   int32 SlotNum() {

@@ -256,8 +256,7 @@ class GPUHashMapKV : public KVInterface<K, V> {
 
   GPUHashTable<K, V>* HashTable() override { return hash_table_; }
 
-  Status BatchLookup(const K* keys, V* val, V* default_v, int32 default_v_num,
-                     bool is_use_default_value_tensor, size_t n,
+  Status BatchLookup(const K* keys, V* val, size_t n,
                      const Eigen::GpuDevice& device) override {
     functor::KvLookupKey<Eigen::GpuDevice, K, V>()(
         keys, val, n, value_len_, static_hash_table_, device.stream());

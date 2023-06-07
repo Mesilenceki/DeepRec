@@ -110,8 +110,7 @@ class KVInterface {
     return Status::OK();
   }
 
-  virtual Status BatchLookup(const K* keys, V* val, V* default_v,
-      int32 default_v_num, bool is_use_default_value_tensor,
+  virtual Status BatchLookup(const K* keys, V* val,
       size_t n, const Eigen::GpuDevice& device) {
     return Status(error::Code::UNIMPLEMENTED,
                   "Unimplemented for BatchLookup in KVInterface.");
