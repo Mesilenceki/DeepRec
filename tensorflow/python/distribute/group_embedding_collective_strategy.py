@@ -114,7 +114,7 @@ class CollectiveStrategy:
             )
 
         elif self._hb:
-            self._hb.export(
+            self._hb.train.export(
                 savedmodel_dir,
                 checkpoint_dir,
                 signature_def_fn,

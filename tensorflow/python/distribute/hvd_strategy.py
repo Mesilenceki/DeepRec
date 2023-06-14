@@ -25,11 +25,16 @@ from tensorflow._api.v1 import train as train_v1
 from tensorflow.python.ops import embedding_ops
 from tensorflow.python.training import basic_session_run_hooks
 from tensorflow.python.training import monitored_session as _monitored_session
+from tensorflow.python.training import device_util
+from tensorflow.python.training import server_lib
 from tensorflow.core.protobuf import config_pb2
 from tensorflow.python.distribute import multi_worker_util
+from tensorflow.python.client import device_lib
 from tensorflow.python.framework import ops
 
 from tensorflow_estimator.python.estimator import estimator as _estimator_lib
+from tensorflow_estimator.python.estimator import \
+    run_config as run_config_lib
 from tensorflow.python.saved_model.model_utils.export_utils import \
   EXPORT_TAG_MAP
 from tensorflow.python.saved_model.model_utils.export_utils import \
@@ -46,6 +51,186 @@ import random as rn
 
 import numpy as np
 import horovod.tensorflow as hvd
+
+class HvdContext(object):
+  DEFAULT_DEVICE = '/job:localhost'
+
+  _instance = None
+
+  @classmethod
+  def get(cls):
+    r'''Get singleton.
+    '''
+    if cls._instance is None:
+      cls._instance = cls()
+    return cls._instance
+
+  @classmethod
+  @contextlib.contextmanager
+  def scope(cls, **kwargs):
+    r'''Update params in context.
+    '''
+    prev_kwargs = {}
+    try:
+      c = cls.get()
+      prev_kwargs = c.options.update(**kwargs)
+      yield c
+    finally:
+      c.options.update(**prev_kwargs)
+      del prev_kwargs
+
+  @classmethod
+  def get_tf_config(cls):
+    r'''Get configuration from TF_CONFIG environment variable.
+    '''
+    tf_config = json.loads(os.getenv('TF_CONFIG', '{}'))
+    if not tf_config:
+      return None
+    task = tf_config['task']
+    cluster = tf_config['cluster']
+    task_type = task['type']
+    task_id = int(task['index'])
+    tf_config_type = collections.namedtuple(
+      'TfConfig', ['task_type', 'task_id', 'cluster'])
+    return tf_config_type(task_type, task_id, cluster)
+  
+  def _update(self, task_type=None, task_id=None, cluster_spec=None,
+              num_gpus=None):
+    r'''Update parameters from cluster_spec.
+
+    If task_type, task_id or cluster_spec is None, these arguments will not be
+    changed.
+
+    Args:
+      task_type: (Optional.) name of current job. `localhost` by default.
+      task_id: (Optional.) index of current task. 0 by default.
+      cluster_spec: (Optional.) ClusterSpec object.
+    '''
+    tf_config = None
+    try:
+      tf_config = self.get_tf_config()
+    except:  # pylint: disable=bare-except
+      pass
+    if tf_config:
+      self._task_type = tf_config.task_type
+      self._task_id = tf_config.task_id
+      self._cluster_spec = server_lib.ClusterSpec(tf_config.cluster)
+    else:
+      self._task_type = 'localhost'
+      self._task_id = 0
+      self._cluster_spec = None
+    if task_type:
+      self._task_type = task_type
+    if self._task_type not in ('localhost', 'chief', 'worker'):
+      logging.info('No valid configuration for non-worker roles')
+      return
+
+    if task_id:
+      self._task_id = task_id
+    if cluster_spec:
+      self._cluster_spec = cluster_spec
+    if self._cluster_spec:
+      self._cluster_spec = multi_worker_util.normalize_cluster_spec(
+        self._cluster_spec)
+      self._is_chief = False
+      try:
+        self._is_chief = multi_worker_util.is_chief(
+          self._cluster_spec, self._task_type, self._task_id)
+      except:  # pylint: disable=bare-except
+        pass
+    if num_gpus:
+      self._num_gpus = num_gpus
+    elif not self._num_gpus:
+      num_gpus = 0
+      num_gpus_config = config_pb2.ConfigProto()
+      num_gpus_config.inter_op_parallelism_threads = 1
+      num_gpus_config.intra_op_parallelism_threads = 1
+      num_gpus_config.gpu_options.allow_growth = True
+      for device in device_lib.list_local_devices(num_gpus_config):
+        if device.device_type == 'GPU':
+          num_gpus += 1
+      self._num_gpus = num_gpus
+    self._default_device = (
+      f'/job:{self._task_type}/replica:0/task:{self._task_id}')
+    self._local_cpu_device = device_util.canonicalize(
+      '/device:CPU:0', default=self._default_device)
+    if self._num_gpus == 0:
+      self._local_devices = [self._local_cpu_device]
+    else:
+      self._local_devices = [
+        device_util.canonicalize(
+          f'/device:GPU:{d}', default=self._default_device)
+        for d in xrange(self._num_gpus)]
+
+    local_world_size_str = os.getenv('LOCAL_WORLD_SIZE', '')
+    if not local_world_size_str:
+      self._local_world_size = len(self._local_devices)  # pylint: disable=protected-access
+    else:
+      self._local_world_size = int(local_world_size_str)
+
+    if not self._cluster_spec:
+      self._devices = list(self._local_devices)
+      return
+    task_indices = []
+    try:
+      task_defs = dict(enumerate(self._cluster_spec.job_tasks(self._task_type)))
+      task_indices = sorted(task_defs)
+    except:  # pylint: disable=bare-except
+      pass
+    worker_indices = []
+    try:
+      worker_defs = dict(enumerate(self._cluster_spec.job_tasks('worker')))
+      worker_indices = sorted(worker_defs)
+    except:  # pylint: disable=bare-except
+      pass
+    chief_indices = []
+    try:
+      chief_defs = dict(enumerate(self._cluster_spec.job_tasks('chief')))
+      chief_indices = sorted(chief_defs)
+    except:  # pylint: disable=bare-except
+      pass
+    self._cpu_devices = [
+      device_util.resolve(f'/job:{self._task_type}/task:{t}/device:CPU:0')
+      for t in task_indices]
+    if self._num_gpus == 0:
+      self._devices = self._cpu_devices
+      if self._task_type == 'worker':
+        chief_devices = [
+          device_util.resolve(f'/job:chief/task:{t}/device:CPU:0')
+          for t in chief_indices]
+        self._devices = chief_devices + self._devices
+      elif self._task_type == 'chief':
+        self._devices += [
+          device_util.resolve(f'/job:worker/task:{t}/device:CPU:0')
+          for t in worker_indices]
+      return
+    self._devices = [
+      device_util.resolve(f'/job:{self._task_type}/task:{t}/device:GPU:{g}')
+      for t in task_indices for g in xrange(self._num_gpus)]
+    if self._task_type == 'worker':
+      chief_devices = [
+        device_util.resolve(f'/job:chief/task:{t}/device:GPU:{g}')
+        for t in chief_indices for g in xrange(self._num_gpus)]
+      self._devices = chief_devices + self._devices
+    elif self._task_type == 'chief':
+      self._devices += [
+        device_util.resolve(f'/job:worker/task:{t}/device:GPU:{g}')
+        for t in worker_indices for g in xrange(self._num_gpus)]
+
+  def __init__(self):
+    r'''Construct a server specification.
+    '''
+    self._task_type = 'localhost'
+    self._task_id = 0
+    self._cluster_spec = None
+    self._is_chief = True
+    visible_devices = os.getenv('CUDA_VISIBLE_DEVICES', '')
+    if visible_devices:
+      self._num_gpus = len(visible_devices.split(','))
+    else:
+      self._num_gpus = 1
+    self._update()
+    self._saving_listener_registry = {}
 
 class GraphRewriting(object):  # pylint: disable=useless-object-inheritance
   r'''Python API rewriting.
@@ -220,7 +405,7 @@ def wraps_monitored_training_session(fn):
     # from rank 0 to all other processes.To ensure consistent
     # initialization of all workers when training is started with random weights
     # or restored from a checkpoint.
-    hooks.extend(hvd.BroadcastGlocalVariablesHook(0))
+    hooks.append(hvd.BroadcastGlobalVariablesHook(0))
 
     chief_only_hooks = kwargs.pop('chief_only_hooks', [])
     chief_only_hooks = list(chief_only_hooks)
@@ -232,7 +417,8 @@ def wraps_monitored_training_session(fn):
     if args:
       master = args[0]
       if not master:
-        master = Server.get().target
+        server = server_lib.Server(HvdContext.get().cluster_spec)
+        master = server.target
       args[0] = master
     else:
       master = kwargs.pop('master', None)
@@ -379,90 +565,90 @@ def export(export_dir_base,
     strip_default_attrs=True,
     modes=None,
     **kwargs):
-  r'''Build a SavedModel from variables in checkpoint.
+    r'''Build a SavedModel from variables in checkpoint.
 
-  Args:
-    export_dir_base: A string containing a directory to write the exported
-        graph and checkpoints.
-    checkpoint_path: A path to a checkpoint.
-    signature_defs_and_main_op_fn: Function returns signature defs and main_op.
-    assets_extra: A dict specifying how to populate the assets.extra directory
-        within the exported SavedModel.  Each key should give the destination
-        path (including the filename) relative to the assets.extra directory.
-        The corresponding value gives the full path of the source file to be
-        copied.  For example, the simple case of copying a single file without
-        renaming it is specified as
-        `{'my_asset_file.txt': '/path/to/my_asset_file.txt'}`.
-    as_text: Whether or not to write the SavedModel proto in text format.
-    clear_devices: Whether or not to clear the device field.
-    strip_default_attrs: Whether or not to remove default-valued attributes
-        from the NodeDefs.
-    modes: List contains PREDICT, TRAIN or TEST.
+    Args:
+      export_dir_base: A string containing a directory to write the exported
+          graph and checkpoints.
+      checkpoint_path: A path to a checkpoint.
+      signature_defs_and_main_op_fn: Function returns signature defs and main_op.
+      assets_extra: A dict specifying how to populate the assets.extra directory
+          within the exported SavedModel.  Each key should give the destination
+          path (including the filename) relative to the assets.extra directory.
+          The corresponding value gives the full path of the source file to be
+          copied.  For example, the simple case of copying a single file without
+          renaming it is specified as
+          `{'my_asset_file.txt': '/path/to/my_asset_file.txt'}`.
+      as_text: Whether or not to write the SavedModel proto in text format.
+      clear_devices: Whether or not to clear the device field.
+      strip_default_attrs: Whether or not to remove default-valued attributes
+          from the NodeDefs.
+      modes: List contains PREDICT, TRAIN or TEST.
 
-  Returns:
-    Export directory if it's chief.
-  '''
-  if hvd.rank() != 0:
-    return None
+    Returns:
+      Export directory if it's chief.
+    '''
+    if hvd.rank() != 0:
+      return None
 
-  export_dir = get_timestamped_export_dir(export_dir_base)
-  with ops.Graph().as_default():
-    with Context.scope(mode=ModeKeys.PREDICT, comm_pool_name=ModeKeys.PREDICT):
-      # Build graph.
-      signature_def_map = signature_defs_and_main_op_fn()
-      main_op = None
-      if isinstance(signature_def_map, (tuple, list)):
-        if len(signature_def_map) > 1:
-          main_op = signature_def_map[1]
-        signature_def_map = signature_def_map[0]
-      if not main_op:
-        main_op = monitored_session.Scaffold.default_local_init_op()
-      if modes is None:
-        modes = [ModeKeys.PREDICT, ModeKeys.TRAIN, ModeKeys.EVAL]
-      modes = [
-        m for m in modes
-        if SIGNATURE_KEY_MAP[m] in signature_def_map]
-      signature_def_map = {
-        k: signature_def_map[k] for k in signature_def_map
-        if k in [SIGNATURE_KEY_MAP[m] for m in modes]}
-      signature_tags = [EXPORT_TAG_MAP[m][0] for m in modes]
+    export_dir = get_timestamped_export_dir(export_dir_base)
+    with ops.Graph().as_default():
+      with Context.scope(mode=ModeKeys.PREDICT, comm_pool_name=ModeKeys.PREDICT):
+        # Build graph.
+        signature_def_map = signature_defs_and_main_op_fn()
+        main_op = None
+        if isinstance(signature_def_map, (tuple, list)):
+          if len(signature_def_map) > 1:
+            main_op = signature_def_map[1]
+          signature_def_map = signature_def_map[0]
+        if not main_op:
+          main_op = monitored_session.Scaffold.default_local_init_op()
+        if modes is None:
+          modes = [ModeKeys.PREDICT, ModeKeys.TRAIN, ModeKeys.EVAL]
+        modes = [
+          m for m in modes
+          if SIGNATURE_KEY_MAP[m] in signature_def_map]
+        signature_def_map = {
+          k: signature_def_map[k] for k in signature_def_map
+          if k in [SIGNATURE_KEY_MAP[m] for m in modes]}
+        signature_tags = [EXPORT_TAG_MAP[m][0] for m in modes]
 
-      b = builder.SavedModelBuilder(export_dir, **kwargs)
-      b._has_saved_variables = True  # pylint: disable=protected-access
+        b = builder.SavedModelBuilder(export_dir, **kwargs)
+        b._has_saved_variables = True  # pylint: disable=protected-access
 
-      # Copy variables.
-      saved_model_utils.get_or_create_variables_dir(export_dir)
-      export_checkpoint_path = saved_model_utils.get_variables_path(export_dir)
-      checkpoint_files = [
-        *gfile.Glob(f'{checkpoint_path}.index'),
-        *gfile.Glob(f'{checkpoint_path}.data-?????-of-?????')]
-      for f in checkpoint_files:
-        export_ckpt = re.sub(
-          compat.as_text(checkpoint_path),
-          compat.as_text(export_checkpoint_path),
-          f)
-        gfile.Copy(f, export_ckpt)
+        # Copy variables.
+        saved_model_utils.get_or_create_variables_dir(export_dir)
+        export_checkpoint_path = saved_model_utils.get_variables_path(export_dir)
+        checkpoint_files = [
+          *gfile.Glob(f'{checkpoint_path}.index'),
+          *gfile.Glob(f'{checkpoint_path}.data-?????-of-?????')]
+        for f in checkpoint_files:
+          export_ckpt = re.sub(
+            compat.as_text(checkpoint_path),
+            compat.as_text(export_checkpoint_path),
+            f)
+          gfile.Copy(f, export_ckpt)
 
-      # Add MetaGraph.
-      b.add_meta_graph(
-        tags=signature_tags,
-        signature_def_map=signature_def_map,
-        assets_collection=ops.get_collection(ops.GraphKeys.ASSET_FILEPATHS),
-        clear_devices=clear_devices,
-        main_op=main_op,
-        strip_default_attrs=strip_default_attrs)
+        # Add MetaGraph.
+        b.add_meta_graph(
+          tags=signature_tags,
+          signature_def_map=signature_def_map,
+          assets_collection=ops.get_collection(ops.GraphKeys.ASSET_FILEPATHS),
+          clear_devices=clear_devices,
+          main_op=main_op,
+          strip_default_attrs=strip_default_attrs)
 
-      # Save model.
-      b.save(as_text=as_text)
+        # Save model.
+        b.save(as_text=as_text)
 
-      # Save extras.
-      if assets_extra:
-        assets_extra_path = os.path.join(
-          export_dir, constants.EXTRA_ASSETS_DIRECTORY)
-        for dst, src in assets_extra.items():
-          target = os.path.join(assets_extra_path, compat.as_bytes(dst))
-          gfile.MakeDirs(os.path.dirname(target))
-          gfile.Copy(src, target)
+        # Save extras.
+        if assets_extra:
+          assets_extra_path = os.path.join(
+            export_dir, constants.EXTRA_ASSETS_DIRECTORY)
+          for dst, src in assets_extra.items():
+            target = os.path.join(assets_extra_path, compat.as_bytes(dst))
+            gfile.MakeDirs(os.path.dirname(target))
+            gfile.Copy(src, target)
 
   return export_all(export_dir_base,
                     checkpoint_path,

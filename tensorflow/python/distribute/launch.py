@@ -63,7 +63,7 @@ def launch(command):
     r"""Run command in subprocess."""
     visible_devices = _query_visible_devices()
     local_world_size_str = str(len(visible_devices))
-    strategy = os.getenv("COLLECTIVE_STRATEGY", "ps")
+    strategy = os.getenv("COLLECTIVE_STRATEGY", "hb")
 
     if strategy == "hb":
         port = int(os.getenv("HB_RUN_BASE_PORT", "20001"))
