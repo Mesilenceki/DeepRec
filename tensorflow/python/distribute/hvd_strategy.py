@@ -25,7 +25,7 @@ from tensorflow._api.v1 import train as train_v1
 from tensorflow.python.ops import embedding_ops
 from tensorflow.python.training import basic_session_run_hooks
 from tensorflow.python.training import monitored_session as _monitored_session
-from tensorflow.python.training import device_util
+from tensorflow.python.distribute import device_util
 from tensorflow.python.training import server_lib
 from tensorflow.core.protobuf import config_pb2
 from tensorflow.python.distribute import multi_worker_util
@@ -94,6 +94,52 @@ class HvdContext(object):
       'TfConfig', ['task_type', 'task_id', 'cluster'])
     return tf_config_type(task_type, task_id, cluster)
   
+  @property
+  def cluster_spec(self):
+    r'''cluster spec.
+    '''
+    return self._cluster_spec
+
+  @property
+  def task_type(self):
+    r'''job name of current server. `localhost` by default.
+    '''
+    return self._task_type
+
+  @property
+  def task_id(self):
+    r'''task index of current server. 0 by default.
+    '''
+    return self._task_id
+
+  @property
+  def target(self):
+    r'''target of current server.
+    '''
+    if not self._cluster_spec:
+      return ''
+
+    addr = self._cluster_spec.job_tasks(self._task_type)[self._task_id]
+    return f'grpc://{addr}'
+
+  @property
+  def is_chief(self):
+    r'''True if current server is chief worker.
+    '''
+    return self._is_chief
+
+  @property
+  def has_gpu(self):
+    r'''True if current server has GPU.
+    '''
+    return self._num_gpus > 0
+
+  @property
+  def num_gpus(self):
+    r'''Number of GPUs.
+    '''
+    return self._num_gpus
+
   def _update(self, task_type=None, task_id=None, cluster_spec=None,
               num_gpus=None):
     r'''Update parameters from cluster_spec.
@@ -160,7 +206,7 @@ class HvdContext(object):
       self._local_devices = [
         device_util.canonicalize(
           f'/device:GPU:{d}', default=self._default_device)
-        for d in xrange(self._num_gpus)]
+        for d in range(self._num_gpus)]
 
     local_world_size_str = os.getenv('LOCAL_WORLD_SIZE', '')
     if not local_world_size_str:
@@ -206,16 +252,16 @@ class HvdContext(object):
       return
     self._devices = [
       device_util.resolve(f'/job:{self._task_type}/task:{t}/device:GPU:{g}')
-      for t in task_indices for g in xrange(self._num_gpus)]
+      for t in task_indices for g in range(self._num_gpus)]
     if self._task_type == 'worker':
       chief_devices = [
         device_util.resolve(f'/job:chief/task:{t}/device:GPU:{g}')
-        for t in chief_indices for g in xrange(self._num_gpus)]
+        for t in chief_indices for g in range(self._num_gpus)]
       self._devices = chief_devices + self._devices
     elif self._task_type == 'chief':
       self._devices += [
         device_util.resolve(f'/job:worker/task:{t}/device:GPU:{g}')
-        for t in worker_indices for g in xrange(self._num_gpus)]
+        for t in worker_indices for g in range(self._num_gpus)]
 
   def __init__(self):
     r'''Construct a server specification.
@@ -368,9 +414,9 @@ def wraps_session_config(session_config, *args, **kwargs):
   session_config.gpu_options.visible_device_list = str(hvd.local_rank())
 
   if not session_config.device_filters:
-    cluster_spec = Context.get().cluster_spec
-    task_type = Context.get().task_type
-    task_id = Context.get().task_id
+    cluster_spec = HvdContext.get().cluster_spec
+    task_type = HvdContext.get().task_type
+    task_id = HvdContext.get().task_id
     if cluster_spec is None:
       session_config.isolate_session_state = True
       return session_config
@@ -384,6 +430,57 @@ def wraps_session_config(session_config, *args, **kwargs):
     elif task_type == 'evaluator':
       session_config.device_filters.append(f'/job:{task_type}/task:{task_id}')
   return session_config
+
+def wraps_server(cls):
+  r'''Decorator to create hybridbackend server class.
+  '''
+  if issubclass(cls, HybridBackendServerBase):
+    return cls
+
+  class HybridBackendServer(cls, HybridBackendServerBase):
+    r'''An in-process TensorFlow server, for use in distributed training.
+    '''
+    _default = None
+
+    @classmethod
+    def get(class_):
+      if class_._default is None:
+        class_._default = class_(None)
+      return class_._default
+
+    def __init__(self, server_or_cluster_def, **kwargs):
+      r'''Creates a new server with the given definition.
+      '''
+      if server_or_cluster_def is None:
+        server_or_cluster_def = HvdContext.get().cluster_spec
+        kwargs['job_name'] = HvdContext.get().task_type
+        kwargs['task_index'] = HvdContext.get().task_id
+      if server_or_cluster_def is None:
+        self._is_local = True
+        return
+      self._is_local = False
+      kwargs['config'] = wraps_session_config(kwargs.pop('config', None))
+      super().__init__(server_or_cluster_def, **kwargs)
+
+    @property
+    def target(self):
+      r'''Returns the target for asession to connect to this server.
+      '''
+      if self._is_local:
+        return ''
+      return super().target
+
+    def monitored_session(self, **kwargs):
+      r'''Creates a `MonitoredSession` for training.
+      '''
+      with scope():
+        return _monitored_session.MonitoredTrainingSession(
+          master=self.target, **kwargs)
+
+  return HybridBackendServer
+
+
+Server = wraps_server(server_lib.Server)
 
 
 def wraps_monitored_training_session(fn):
@@ -417,8 +514,7 @@ def wraps_monitored_training_session(fn):
     if args:
       master = args[0]
       if not master:
-        server = server_lib.Server(HvdContext.get().cluster_spec)
-        master = server.target
+        master = Server.get().target
       args[0] = master
     else:
       master = kwargs.pop('master', None)
