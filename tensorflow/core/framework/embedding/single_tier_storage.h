@@ -304,15 +304,6 @@ class SingleTierStorage : public Storage<K, V> {
     return nullptr;
   }
 
-  void RestoreSsdHashmap(
-      K* key_list, int64* key_file_id_list,
-      int64* key_offset_list, int64 num_of_keys,
-      int64* file_list, int64* invalid_record_count_list,
-      int64* record_count_list, int64 num_of_files,
-      const std::string& ssd_emb_file_name) override {
-    LOG(FATAL)<<"The Storage dosen't have ssd storage.";
-  }
-
   virtual void ImportToHbm (
       K* ids, int64 size, int64 value_len, int64 emb_index) override {
     LOG(FATAL)<<"This Storage dosen't have a HBM storage.";

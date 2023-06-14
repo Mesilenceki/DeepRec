@@ -383,18 +383,17 @@ class KvResourceImportV3Op: public AsyncOpKernel {
         name_string_temp.replace(pos, 1, new_str.data(), 1);
         pos = name_string_temp.find("/");
       }
+
+
       std::string ssd_record_file_name =
           file_name_string + "-" + name_string_temp + "-ssd_record";
       //TODO: support change the partition number
       if (Env::Default()->FileExists(ssd_record_file_name + ".index").ok()) {
         std::string ssd_emb_file_name =
             file_name_string + "-" + name_string_temp + "-emb_files";
-        if (ev->IsUsePersistentStorage()) {
-          RestoreSsdRecord(ev, ssd_record_file_name, ssd_emb_file_name);
-        } else {
-          LoadSsdData(ev, ssd_record_file_name, ssd_emb_file_name);
-        }
+        ev->ImportSsdData(ssd_record_file_name, ssd_emb_file_name);
       }
+
       if (ev->IsSingleHbm()) {
 #if GOOGLE_CUDA
         se::cuda::ScopedActivateExecutorContext scoped_activation{

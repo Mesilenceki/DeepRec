@@ -441,6 +441,50 @@ class EmbeddingVar : public ResourceBase {
     return emb_config_.DebugString();
   }
 
+
+  //***************//
+  Status RestoreMain() {
+
+  }
+
+  Status ImportSsdData(const std::string& ssd_record_file_name,
+                 const std::string& ssd_emb_file_name) {
+    
+    if (IsUsePersistentStorage()) {
+      storage_->RestoreSsdRecord(ssd_record_file_name, ssd_emb_file_name);
+    } else {
+      LoadSsdData(ssd_record_file_name, ssd_emb_file_name);
+    }
+  }
+
+  Status ImportHbmCache(const std::string& name_string) {
+    if (IsMultiLevel() && IsUseHbm()) {
+      std::unique<embedding::BatchCache<K>> cache_for_restore_hbm;
+      auto cache_strategy = storage_->CacheStrategy();
+      cache_for_restore_hbm.reset(embedding::CacheFactory::Create<K>(
+          cache_strategy, "hbm_restore_cache for " + name_string));
+      
+      int64 cache_capacity = CacheSize();
+      int64 num_of_hbm_ids =
+        std::min(cache_capacity, (int64)cache_for_restore_hbm->size());
+      K* hbm_ids = new K[num_of_hbm_ids];
+      int64* hbm_freqs = new int64[num_of_hbm_ids];
+      int64* hbm_versions = nullptr;
+      cache_for_restore_hbm->get_cached_ids(
+          hbm_ids, num_of_hbm_ids, hbm_versions, hbm_freqs);
+      ImportToHbm(hbm_ids, num_of_hbm_ids);
+      storage_->Schedule([this, hbm_ids, num_of_hbm_ids,
+                                        hbm_versions, hbm_freqs]() {
+        this->storage_->Cache()->update(hbm_ids, num_of_hbm_ids, 
+                                  hbm_versions, hbm_freqs);
+        delete[] hbm_ids;
+        delete[] hbm_freqs;
+      });
+    }
+  }
+  //***************//
+
+
   Status Import(RestoreBuffer& restore_buff,
                 int64 key_num,
                 int bucket_num,
@@ -460,6 +504,10 @@ class EmbeddingVar : public ResourceBase {
       }
       s = filter_->ImportToDram(restore_buff, key_num, bucket_num,
           partition_id, partition_num, is_filter, default_value_host);
+      //Update Cache
+      cache_for_restore_hbm->update((K*)restore_buff.key_buffer, key_num,
+                                    (int64*)restore_buff.version_buffer,
+                                    (int64*)restore_buff.freq_buffer);
       delete[] default_value_host;
 #endif //GOOGLE_CUDA
       return s;
@@ -494,25 +542,18 @@ class EmbeddingVar : public ResourceBase {
         value_len_, emb_config_.emb_index);
   }
 
-  void RestoreSsdHashmap(
-      K* key_list, int64* key_file_id_list,
-      int64* key_offset_list, int64 num_of_keys,
-      int64* file_list, int64* invalid_record_count_list,
-      int64* record_count_list, int64 num_of_files,
-      const std::string& ssd_emb_file_name) {
-    storage_->
-        RestoreSsdHashmap(
-            key_list, key_file_id_list,
-            key_offset_list, num_of_keys,
-            file_list, invalid_record_count_list,
-            record_count_list, num_of_files,
-            ssd_emb_file_name);
-  }
-
+  template<typename K>
   void LoadSsdData(
-      const string& old_file_prefix,
-      K* key_list, int64* key_file_id_list,
-      int64* key_offset_list, int64 num_of_keys) {
+      const std::string& ssd_record_file_name,
+      const std::string& ssd_emb_file_name) {
+    std::vector<K> key_list;
+    std::vector<int64> key_file_id_list;
+    std::vector<int64> key_offset_list;
+    int64 num_of_keys;
+    ReadSsdRecord(key_list.data(), key_file_id_list.data(), 
+                  key_offset_list.data(), num_of_keys, ssd_record_file_name);
+
+    //Load keys and embedding data on ssd
     int64 alloc_len = storage_->ComputeAllocLen(value_len_);
     for (int64 i = 0; i < num_of_keys; i++) {
       ValuePtr<V>* value_ptr = nullptr;
@@ -523,7 +564,7 @@ class EmbeddingVar : public ResourceBase {
       // Read data from embedding files on SSD. Data are stored in
       // NormalContiguousValuePtr temporarily.
       std::stringstream ss;
-      ss <<old_file_prefix << "/" << file_id << ".emb";
+      ss <<ssd_emb_file_name << "/" << file_id << ".emb";
       int fd = open(ss.str().data(), O_RDONLY);
       char* file_addr =
           (char*)mmap(nullptr,
