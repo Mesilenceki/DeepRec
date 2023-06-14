@@ -109,6 +109,9 @@ struct LaunchFusedMatMulOp<CPUDevice, T> {
         out.device(d) =
             lhs.contract(rhs, dim_pair, WithBiasAddAndElu<T>(bias_add_args));
         break;
+      case FusedComputationType::kBiasAddWithLeakyRelu:
+        out.device(d) = 
+            lhs.contract(rhs, dim_pair, WithBiasAddAndLeakyRelu<T>(bias_add_args));
       case FusedComputationType::kUndefined:
         OP_REQUIRES_OK(context, errors::Internal("Fusion type is undefined"));
         break;
@@ -346,7 +349,8 @@ class FusedMatMulOp : public OpKernel {
       patterns = {{FCT::kBiasAdd, {"BiasAdd"}},
                   {FCT::kBiasAddWithRelu, {"BiasAdd", "Relu"}},
                   {FCT::kBiasAddWithRelu6, {"BiasAdd", "Relu6"}},
-                  {FCT::kBiasAddWithElu, {"BiasAdd", "Elu"}}};
+                  {FCT::kBiasAddWithElu, {"BiasAdd", "Elu"}},
+                  {FCT::kBiasAddWithLeakyRelu, {"BiasAdd", "LeakyRelu"}}};
     } else if (std::is_same<Device, GPUDevice>::value) {
       patterns = {{FCT::kBiasAdd, {"BiasAdd"}},
                   {FCT::kBiasAddWithRelu, {"BiasAdd", "Relu"}}};
