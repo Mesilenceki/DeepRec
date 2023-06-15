@@ -230,8 +230,7 @@ class BundleReader {
   Status Lookup(StringPiece key, Tensor* val) TF_MUST_USE_RESULT;
 
   Status LookupHeader(StringPiece key, int64 total_bytes);
-  Status LookupSegment(StringPiece key, size_t buffer_size, char* destination, size_t& real_bytes_read);
-  Status LookupSegmentOffset(StringPiece key, uint64_t offset, size_t buffer_size, char* destination, size_t& real_bytes_read);
+  Status LookupSegment(StringPiece key, uint64_t offset, size_t buffer_size, char* destination, size_t& real_bytes_read);
 
   Status GetTensorInfo(
       StringPiece key, int64* size,

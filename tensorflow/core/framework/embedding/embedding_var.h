@@ -441,50 +441,6 @@ class EmbeddingVar : public ResourceBase {
     return emb_config_.DebugString();
   }
 
-
-  //***************//
-  Status RestoreMain() {
-
-  }
-
-  Status ImportSsdData(const std::string& ssd_record_file_name,
-                 const std::string& ssd_emb_file_name) {
-    
-    if (IsUsePersistentStorage()) {
-      storage_->RestoreSsdRecord(ssd_record_file_name, ssd_emb_file_name);
-    } else {
-      LoadSsdData(ssd_record_file_name, ssd_emb_file_name);
-    }
-  }
-
-  Status ImportHbmCache(const std::string& name_string) {
-    if (IsMultiLevel() && IsUseHbm()) {
-      std::unique<embedding::BatchCache<K>> cache_for_restore_hbm;
-      auto cache_strategy = storage_->CacheStrategy();
-      cache_for_restore_hbm.reset(embedding::CacheFactory::Create<K>(
-          cache_strategy, "hbm_restore_cache for " + name_string));
-      
-      int64 cache_capacity = CacheSize();
-      int64 num_of_hbm_ids =
-        std::min(cache_capacity, (int64)cache_for_restore_hbm->size());
-      K* hbm_ids = new K[num_of_hbm_ids];
-      int64* hbm_freqs = new int64[num_of_hbm_ids];
-      int64* hbm_versions = nullptr;
-      cache_for_restore_hbm->get_cached_ids(
-          hbm_ids, num_of_hbm_ids, hbm_versions, hbm_freqs);
-      ImportToHbm(hbm_ids, num_of_hbm_ids);
-      storage_->Schedule([this, hbm_ids, num_of_hbm_ids,
-                                        hbm_versions, hbm_freqs]() {
-        this->storage_->Cache()->update(hbm_ids, num_of_hbm_ids, 
-                                  hbm_versions, hbm_freqs);
-        delete[] hbm_ids;
-        delete[] hbm_freqs;
-      });
-    }
-  }
-  //***************//
-
-
   Status Import(RestoreBuffer& restore_buff,
                 int64 key_num,
                 int bucket_num,
@@ -504,8 +460,7 @@ class EmbeddingVar : public ResourceBase {
       }
       s = filter_->ImportToDram(restore_buff, key_num, bucket_num,
           partition_id, partition_num, is_filter, default_value_host);
-      //Update Cache
-      cache_for_restore_hbm->update((K*)restore_buff.key_buffer, key_num,
+      Cache()->update((K*)restore_buff.key_buffer, key_num,
                                     (int64*)restore_buff.version_buffer,
                                     (int64*)restore_buff.freq_buffer);
       delete[] default_value_host;
@@ -537,9 +492,27 @@ class EmbeddingVar : public ResourceBase {
     }
   }
 
-  void ImportToHbm(K* ids, int64 size) {
-    storage_->ImportToHbm(ids, size,
+  void ImportToHbm() {
+    //Update Cache
+    if (IsMultiLevel() && IsUseHbm()) {
+      int64 cache_capacity = CacheSize();
+      int64 num_of_hbm_ids =
+        std::min(cache_capacity, (int64)Cache()->size());
+      K* hbm_ids = new K[num_of_hbm_ids];
+      int64* hbm_freqs = new int64[num_of_hbm_ids];
+      int64* hbm_versions = nullptr;
+      cache_for_restore_hbm->get_cached_ids(
+          hbm_ids, num_of_hbm_ids, hbm_versions, hbm_freqs);
+      storage_->ImportToHbm(ids, size,
         value_len_, emb_config_.emb_index);
+      storage_->Schedule([this, hbm_ids, num_of_hbm_ids,
+                                        hbm_versions, hbm_freqs]() {
+        this->storage_->Cache()->update(hbm_ids, num_of_hbm_ids, 
+                                  hbm_versions, hbm_freqs);
+        delete[] hbm_ids;
+        delete[] hbm_freqs;
+      });
+    }
   }
 
   template<typename K>

@@ -1110,33 +1110,7 @@ Status BundleReader::LookupHeader(StringPiece tensor_key, int64 total_bytes) {
 
 }
 
-Status BundleReader::LookupSegment(StringPiece key, size_t buffer_size, char* destination, size_t& real_bytes_read) {
-  LookupSegItem& seg_item = tmp_lookupseg_items_[string(key)];
-  const size_t desired_bytes = std::min(buffer_size, seg_item.total_size);
-  if (desired_bytes == 0) {
-    real_bytes_read = 0;
-    return Status::OK();
-  }
-
-  io::InputBuffer* buffered_file = data_[seg_item.entry.shard_id()];
-  StringPiece result;
-  Status status = buffered_file->file()->Read(seg_item.entry.offset() + seg_item.bytes_read, desired_bytes, &result, destination);
-
-  if (!status.ok()) {
-    return errors::InvalidArgument("Read Error! ", buffer_size, " ", seg_item.total_size, " ", seg_item.entry.offset() + seg_item.bytes_read, " ", desired_bytes, " ", status.ToString());
-  }
-  if (result.size() != desired_bytes) {
-    return errors::DataLoss("Requested ", desired_bytes, " bytes but read ",
-        result.size(), " bytes.");
-  }
-  // Data is already in the correct location.
-  seg_item.bytes_read += result.size();
-  seg_item.total_size -= result.size();
-  real_bytes_read = result.size();
-  return Status::OK();
-}
-
-Status BundleReader::LookupSegmentOffset(StringPiece key, uint64_t offset, size_t buffer_size, char* destination, size_t& real_bytes_read) {
+Status BundleReader::LookupSegment(StringPiece key, uint64_t offset, size_t buffer_size, char* destination, size_t& real_bytes_read) {
   LookupSegItem& seg_item = tmp_lookupseg_items_[string(key)];
   const size_t desired_bytes = std::min(buffer_size, seg_item.total_size);
   if (desired_bytes == 0) {

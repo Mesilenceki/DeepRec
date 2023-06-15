@@ -367,34 +367,14 @@ class KvResourceImportV3Op: public AsyncOpKernel {
 
     core::ScopedUnref unref_me(ev);
 
-    auto do_compute = [this, context, file_name_string, ev,
-         name_string, done] () {
-      BundleReader reader(Env::Default(), file_name_string);
-      auto s = reader.status();
-      if (!s.ok()) {
-        LOG(FATAL) << "Restore EV failure, create BundleReader error:"
-                   << s.ToString();
-      }
+    BundleReader reader(Env::Default(), file_name_string);
+    auto s = reader.status();
+    if (!s.ok()) {
+      LOG(FATAL) << "Restore EV failure, create BundleReader error:"
+                  << s.ToString();
+    }
 
-      std::string name_string_temp(name_string);
-      std::string new_str = "_";
-      int64 pos = name_string_temp.find("/");
-      while (pos != std::string::npos) {
-        name_string_temp.replace(pos, 1, new_str.data(), 1);
-        pos = name_string_temp.find("/");
-      }
-
-
-      std::string ssd_record_file_name =
-          file_name_string + "-" + name_string_temp + "-ssd_record";
-      //TODO: support change the partition number
-      if (Env::Default()->FileExists(ssd_record_file_name + ".index").ok()) {
-        std::string ssd_emb_file_name =
-            file_name_string + "-" + name_string_temp + "-emb_files";
-        ev->ImportSsdData(ssd_record_file_name, ssd_emb_file_name);
-      }
-
-      if (ev->IsSingleHbm()) {
+    if (ev->IsSingleHbm()) {
 #if GOOGLE_CUDA
         se::cuda::ScopedActivateExecutorContext scoped_activation{
             context->op_device_context()->stream()->parent()};
@@ -410,16 +390,8 @@ class KvResourceImportV3Op: public AsyncOpKernel {
             "-partition_offset", "-keys", "-values", "-versions", "-freqs",
             reset_version_, nullptr);
       }
-      ev->SetInitialized();
-      done();
-    };
-
-    if (ev_async_restore_) {
-      auto tp = KvRestoreThreadPool::GetInstance();
-      tp->Schedule(do_compute);
-    } else {
-      do_compute();
-    }
+    ev->SetInitialized();
+    done();
   }
 
  private:
