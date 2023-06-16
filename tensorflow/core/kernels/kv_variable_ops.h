@@ -912,7 +912,9 @@ Status EVRestoreNoPartiton(EmbeddingVar<K, V>* ev, BundleReader* reader,
 template<typename K, typename V>
 Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev,
     BundleReader* reader, const std::string& name_string,
-    int partition_id, int partition_num) {
+    const std::string& key_suffix, const std::string& value_suffix,
+    const std::string& version_suffix, const std::string& freq_suffix,
+    int partition_id, int partition_num, bool reset_version) {
   // then we use primary partition number to compose with
   // sub partition number
   VLOG(1) << "new form:" << name_string
@@ -941,7 +943,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev,
   bool restore_customDim;
   TF_CHECK_OK(ReadBoolFromEnvVar(
               "TF_EV_RESTORE_CUSTOM_DIM", false, &restore_customDim));
-  
+  bool has_filter, has_freq;
   int orig_partnum = 0;
   for (;  ; orig_partnum++) {
     string part_id = std::to_string(orig_partnum);
@@ -959,7 +961,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev,
     Status st = EVRestorePrepareShape<K, V>(reader, tensor_key, tensor_value,
       tensor_version, tensor_freq, &key_shape, &value_shape,
       &version_shape, &freq_shape, &key_filter_shape, &version_filter_shape,
-      &freq_filter_shape, filter_flag, restore_filter_flag);
+      &freq_filter_shape, has_filter, has_freq);
 
     TensorShape part_offset_shape, part_filter_offset_shape;
     DataType part_offset_type, part_filter_offset_type;
@@ -1098,8 +1100,8 @@ Status EVRestoreOldFromCheckpoint(EmbeddingVar<K, V>* ev,
 
 template<typename K, typename V>
 Status EVRestoreImpl(EmbeddingVar<K, V>* ev,
-    const std::string& name_string, int partition_id,
-    int partition_num, OpKernelContext* context,
+    const std::string& name_string, std::string& file_name_string,
+    int partition_id, int partition_num, OpKernelContext* context,
     BundleReader* reader, const std::string& part_offset_tensor_suffix,
     const std::string& key_suffix, const std::string& value_suffix,
     const std::string& version_suffix, const std::string& freq_suffix,
@@ -1107,7 +1109,7 @@ Status EVRestoreImpl(EmbeddingVar<K, V>* ev,
   
   Status s;
   std::string ssd_emb_file_name, ssd_record_file_name;
-  if (HasSsdFile(name_string, ssd_record_file_name, ssd_emb_file_name)) {
+  if (HasSsdFile(name_string, file_name_string, ssd_record_file_name, ssd_emb_file_name)) {
     ev->ImportSsdData(ssd_record_file_name, ssd_emb_file_name);
   }
 
@@ -1135,7 +1137,9 @@ Status EVRestoreImpl(EmbeddingVar<K, V>* ev,
     return s;
   } 
 
-  s = EVRestoreWithPartition(ev, reader, name_string, partition_id, partition_num);
+  s = EVRestoreWithPartition(ev, reader, name_string, 
+      key_suffix, value_suffix, version_suffix, freq_suffix,
+      partition_id, partition_num, reset_version);
   if (!s.ok()) {
     LOG(FATAL) <<  "EV restoring fail:" << s.ToString();
     return s;
@@ -1145,9 +1149,10 @@ Status EVRestoreImpl(EmbeddingVar<K, V>* ev,
 }
 
 inline bool HasSsdFile(const std::string& file_name,
+                       const std::string& file_name_string,
                        std::string& ssd_record_file_name,
                         std::string& ssd_emb_file_name) {
-  std::string name_string_temp(name_string);
+  std::string name_string_temp(file_name);
   std::string new_str = "_";
   int64 pos = name_string_temp.find("/");
   while (pos != std::string::npos) {

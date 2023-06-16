@@ -259,7 +259,7 @@ class KvResourceImportV2Op: public AsyncOpKernel {
       }
 
       EVRestoreImpl(
-          ev, name_string, partition_id_, partition_num_, context, &reader,
+          ev, name_string, file_name_string, partition_id_, partition_num_, context, &reader,
           "-partition_offset", "-keys", "-values", "-versions", "-freqs",
           reset_version_);
       ev->SetInitialized();
@@ -380,13 +380,13 @@ class KvResourceImportV3Op: public AsyncOpKernel {
             context->op_device_context()->stream()->parent()};
         const Eigen::GpuDevice& device = context->eigen_gpu_device();
         EVRestoreImpl(
-            ev, name_string, partition_id_, partition_num_, context, &reader,
+            ev, name_string, file_name_string, partition_id_, partition_num_, context, &reader,
             "-partition_offset", "-keys", "-values", "-versions", "-freqs",
             reset_version_, &device);
 #endif
       } else {
         EVRestoreImpl(
-            ev, name_string, partition_id_, partition_num_, context, &reader,
+            ev, name_string, file_name_string, partition_id_, partition_num_, context, &reader,
             "-partition_offset", "-keys", "-values", "-versions", "-freqs",
             reset_version_, nullptr);
       }
@@ -467,7 +467,7 @@ class KvResourceIncrImportOp: public AsyncOpKernel {
               << partition_num_;
 
     EVRestoreImpl(
-        ev, name_string, partition_id_, partition_num_, context, &reader,
+        ev, name_string, file_name_string, partition_id_, partition_num_, context, &reader,
         "-incr_partition_offset", "-sparse_incr_keys", "-sparse_incr_values",
         "-sparse_incr_versions", "-sparse_incr_freqs");
     ev->SetInitialized();
