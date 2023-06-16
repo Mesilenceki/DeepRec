@@ -517,7 +517,21 @@ class EmbeddingVar : public ResourceBase {
   void ImportSsdData(const std::string& ssd_record_file_name,
                    const std::string& ssd_emb_file_name) {
   if (IsUsePersistentStorage()) {
-    storage_->RestoreSsdRecord(ssd_record_file_name, ssd_emb_file_name);
+    std::vector<int64> file_list;
+    std::vector<int64> invalid_record_count_list;
+    std::vector<int64> record_count_list;
+    std::vector<K> key_list;
+    std::vector<int64> key_file_id_list;
+    std::vector<int64> key_offset_list;
+    int64 num_of_keys;
+    int64 num_of_files;
+    ReadSsdRecord(key_list.data(), key_file_id_list.data(),
+        key_offset_list.data(), num_of_keys, file_list.data(),
+        invalid_record_count_list.data(), record_count_list.data(),
+        num_of_files, ssd_record_file_name);
+    storage_->RestoreSsdRecord(file_list.data(), invalid_record_count_list.data(),
+        record_count_list.data(), key_list.data(), key_file_id_list.data(),
+        key_offset_list.data(), num_of_keys, num_of_files);
   } else {
     std::vector<K> key_list;
     std::vector<int64> key_file_id_list;

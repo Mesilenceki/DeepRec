@@ -87,8 +87,10 @@ class Storage {
       SsdRecordDescriptor<K>* ssd_rec_desc) = 0;
   virtual embedding::Iterator* GetIterator() = 0;
   virtual void RestoreSsdRecord(
-      const std::string& ssd_record_file_name,
-      const std::string& ssd_emb_file_name) = 0;
+      int64* file_list, int64* invalid_record_count_list,
+                        int64* record_count_list, K* key_list,
+                        int64* key_file_id_list, int64* key_offset_list,
+                        int num_of_files, int num_of_keys);
   virtual Status Shrink(const ShrinkArgs& shrink_args) = 0;
 
   virtual Status BatchCommit(const std::vector<K>& keys,

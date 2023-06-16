@@ -210,21 +210,11 @@ class DramSsdHashStorage : public MultiTierStorage<K, V> {
     return key_list->size() + ssd_rec_desc->key_list.size();
   }
 
-  void RestoreSsdRecord(const std::string& ssd_record_file_name,
-                        const std::string& ssd_emb_file_name) {
-    std::vector<int64> file_list;
-    std::vector<int64> invalid_record_count_list;
-    std::vector<int64> record_count_list;
-    std::vector<K> key_list;
-    std::vector<int64> key_file_id_list;
-    std::vector<int64> key_offset_list;
-    int64 num_of_keys;
-    int64 num_of_files;
-    ReadSsdRecord(key_list.data(), key_file_id_list.data(),
-        key_offset_list.data(), num_of_keys, file_list.data(),
-        invalid_record_count_list.data(), record_count_list.data(),
-        num_of_files, ssd_record_file_name);
-
+  void RestoreSsdRecord(int64* file_list, int64* invalid_record_count_list,
+                        int64* record_count_list, K* key_list,
+                        int64* key_file_id_list, int64* key_offset_list,
+                        int num_of_files, int num_of_keys) override {
+    
     //RestoreSsdHashmap
     std::map<int64, int64> file_id_map;
     for (int64 i = 0; i < num_of_files; i++) {
@@ -232,12 +222,12 @@ class DramSsdHashStorage : public MultiTierStorage<K, V> {
     }
 
     ssd_hash_->CopyEmbFilesFromCkpt(
-        file_list.data(), invalid_record_count_list.data(),
-        record_count_list.data(), num_of_files,
+        file_list, invalid_record_count_list,
+        record_count_list, num_of_files,
         ssd_emb_file_name);
 
-    ssd_hash_->Import(key_list.data(), key_file_id_list.data(),
-                    key_offset_list.data(), num_of_keys,
+    ssd_hash_->Import(key_list, key_file_id_list,
+                    key_offset_list, num_of_keys,
                     file_id_map);
   }
 
