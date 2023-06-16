@@ -516,60 +516,63 @@ class EmbeddingVar : public ResourceBase {
   }
 
   template<typename K>
-  void LoadSsdData(
-      const std::string& ssd_record_file_name,
-      const std::string& ssd_emb_file_name) {
-    std::vector<K> key_list;
-    std::vector<int64> key_file_id_list;
-    std::vector<int64> key_offset_list;
-    int64 num_of_keys;
-    ReadSsdRecord(key_list.data(), key_file_id_list.data(), 
-                  key_offset_list.data(), num_of_keys, ssd_record_file_name);
+  void ImportSsdData(const std::string& ssd_record_file_name,
+                        const std::string& ssd_emb_file_name) {
+    if (IsUsePersistentStorage()) {
+      storage_->RestoreSsdRecord(ssd_record_file_name, ssd_emb_file_name);
+    } else {
+      std::vector<K> key_list;
+      std::vector<int64> key_file_id_list;
+      std::vector<int64> key_offset_list;
+      int64 num_of_keys;
+      ReadSsdRecord(key_list.data(), key_file_id_list.data(), 
+                    key_offset_list.data(), num_of_keys, ssd_record_file_name);
 
-    //Load keys and embedding data on ssd
-    int64 alloc_len = storage_->ComputeAllocLen(value_len_);
-    for (int64 i = 0; i < num_of_keys; i++) {
-      ValuePtr<V>* value_ptr = nullptr;
-      LookupOrCreateKey(key_list[i], &value_ptr);
+      //Load keys and embedding data on ssd
+      int64 alloc_len = storage_->ComputeAllocLen(value_len_);
+      for (int64 i = 0; i < num_of_keys; i++) {
+        ValuePtr<V>* value_ptr = nullptr;
+        LookupOrCreateKey(key_list[i], &value_ptr);
 
-      int64 file_id = key_file_id_list[i];
-      int64 key_offset = key_offset_list[i];
-      // Read data from embedding files on SSD. Data are stored in
-      // NormalContiguousValuePtr temporarily.
-      std::stringstream ss;
-      ss <<ssd_emb_file_name << "/" << file_id << ".emb";
-      int fd = open(ss.str().data(), O_RDONLY);
-      char* file_addr =
-          (char*)mmap(nullptr,
-                      sizeof(FixedLengthHeader)
-                          + alloc_len * sizeof(V)
-                          * (emb_config_.slot_num + 1)
-                          + key_offset,
-                      PROT_READ,
-                      MAP_PRIVATE, fd, 0);
+        int64 file_id = key_file_id_list[i];
+        int64 key_offset = key_offset_list[i];
+        // Read data from embedding files on SSD. Data are stored in
+        // NormalContiguousValuePtr temporarily.
+        std::stringstream ss;
+        ss <<ssd_emb_file_name << "/" << file_id << ".emb";
+        int fd = open(ss.str().data(), O_RDONLY);
+        char* file_addr =
+            (char*)mmap(nullptr,
+                        sizeof(FixedLengthHeader)
+                            + alloc_len * sizeof(V)
+                            * (emb_config_.slot_num + 1)
+                            + key_offset,
+                        PROT_READ,
+                        MAP_PRIVATE, fd, 0);
 
-      NormalContiguousValuePtr<V> tmp_value_ptr(alloc_,
-          alloc_len * (emb_config_.slot_num + 1));
-      void* ptr = tmp_value_ptr.GetPtr();
-      memcpy(ptr, file_addr + key_offset,
-             sizeof(FixedLengthHeader)
-                 + alloc_len * sizeof(V) * (emb_config_.slot_num + 1));
-      munmap(file_addr,
-             sizeof(FixedLengthHeader)
-                 + alloc_len * sizeof(V)
-                 * (emb_config_.slot_num + 1)
-                 + key_offset);
-      close(fd);
-      //Copy Data to ValuePtr, data of slots are set by primary here.
-      for (int j = 0; j < emb_config_.slot_num + 1; j++) {
-        V* value = tmp_value_ptr.GetValue(j, alloc_len * j);
-        if (value != nullptr) {
-          value_ptr->GetOrAllocate(alloc_, value_len_, value,
-              j, alloc_len * j);
+        NormalContiguousValuePtr<V> tmp_value_ptr(alloc_,
+            alloc_len * (emb_config_.slot_num + 1));
+        void* ptr = tmp_value_ptr.GetPtr();
+        memcpy(ptr, file_addr + key_offset,
+              sizeof(FixedLengthHeader)
+                  + alloc_len * sizeof(V) * (emb_config_.slot_num + 1));
+        munmap(file_addr,
+              sizeof(FixedLengthHeader)
+                  + alloc_len * sizeof(V)
+                  * (emb_config_.slot_num + 1)
+                  + key_offset);
+        close(fd);
+        //Copy Data to ValuePtr, data of slots are set by primary here.
+        for (int j = 0; j < emb_config_.slot_num + 1; j++) {
+          V* value = tmp_value_ptr.GetValue(j, alloc_len * j);
+          if (value != nullptr) {
+            value_ptr->GetOrAllocate(alloc_, value_len_, value,
+                j, alloc_len * j);
+          }
         }
+        value_ptr->SetFreq(tmp_value_ptr.GetFreq());
+        value_ptr->SetStep(tmp_value_ptr.GetStep());
       }
-      value_ptr->SetFreq(tmp_value_ptr.GetFreq());
-      value_ptr->SetStep(tmp_value_ptr.GetStep());
     }
   }
 

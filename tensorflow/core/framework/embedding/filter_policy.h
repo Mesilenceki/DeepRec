@@ -20,15 +20,13 @@ limitations under the License.
 
 namespace tensorflow {
 
-const size_t buffer_size = 8 << 20;
-
 struct RestoreBuffer {
   char* key_buffer = nullptr;
   char* value_buffer = nullptr;
   char* version_buffer = nullptr;
   char* freq_buffer = nullptr;
 
-  RestoreBuffer() {
+  RestoreBuffer(size_t buffer_size) {
     key_buffer = new char[buffer_size];
     value_buffer = new char[buffer_size];
     version_buffer = new char[buffer_size];
