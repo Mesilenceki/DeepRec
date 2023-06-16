@@ -606,7 +606,8 @@ Status EVRestoreFilter(int64 tot_key_filter_num, RestoreBuffer& restore_buff,
                      BundleReader* reader, EmbeddingVar<K, V>* ev, const std::string& tensor_key,
                      const std::string& tensor_version, const std::string& tensor_freq,
                      bool reset_version, int64 key_filter_offset, int64 version_filter_offset,
-                     int64 freq_filter_offset, int bucket_num, int partition_id, int partition_num,){
+                     int64 freq_filter_offset, int bucket_num, int partition_id, int partition_num){
+  Status s;
   size_t key_filter_bytes_read = 0;
   size_t version_filter_bytes_read = 0;
   size_t freq_filter_bytes_read = 0;
@@ -631,10 +632,10 @@ Status EVRestoreFilter(int64 tot_key_filter_num, RestoreBuffer& restore_buff,
     if (key_filter_bytes_read > 0) {
       read_key_num = key_filter_bytes_read / sizeof(K);
       VLOG(2) << "restore, read_key_num:" << read_key_num;
-      st = ev->Import(restore_buff, read_key_num, kSavedPartitionNum,
+      s = ev->Import(restore_buff, read_key_num, kSavedPartitionNum,
           partition_id, partition_num, true, device);
-      if (!st.ok())
-        return st;
+      if (!s.ok())
+        return s;
       tot_key_filter_num -= read_key_num;
     }
   }
@@ -647,8 +648,10 @@ Status EVRestoreData(BundleReader* reader, RestoreBuffer& restore_buff, Embeddin
                   const std::string& tensor_key, const std::string& tensor_value,
                   const std::string& tensor_version, const std::string& tensor_freq,
                   int64 key_offset, int64 value_offset, int64 version_offset,
-                  int64 freq_offset, int partition_id, int partition_num) {
+                  int64 freq_offset, int partition_id, int partition_num,
+                  bool filter_flag, bool reset_version) {
   //Restore key
+  Status st;
   bool restore_customDim;
   TF_CHECK_OK(ReadBoolFromEnvVar(
                                 "TF_EV_RESTORE_CUSTOM_DIM", false, &restore_customDim));
@@ -749,7 +752,8 @@ Status DynamicRestoreValue(EmbeddingVar<K, V>* ev, BundleReader* reader,
     std::string name_string, int orig_partnum, const GPUDevice* device,
     int64 partition_id = 0, int64 partition_num = 1, bool reset_version = false) {
   string curr_partid_str = std::to_string(partition_id);
-  bool filter_flag = true;
+  bool has_filter = true;
+  bool has_freq = true;
   if (ev->IsMultiLevel() && ev->IsUseHbm()) {
     auto cache_strategy = ev->storage()->CacheStrategy();
     embedding::CacheFactory::Create<K>(
@@ -784,8 +788,8 @@ Status DynamicRestoreValue(EmbeddingVar<K, V>* ev, BundleReader* reader,
 
     st = EVRestoreData(reader, ev, value_unit_bytes, value_unit_bytes_new, tot_key_num,
             tensor_key, tensor_value, tensor_version, tensor_freq,
-            key_part_offset, value_part_offset, version_part_offset, freq_part_offset,
-            kSavedPartitionNum, partition_id, partition_num);
+            key_shape, value_shape, version_shape, freq_shape,
+            kSavedPartitionNum, partition_id, partition_num, has_filter, reset_version);
   }
   ev->ImportToHbm();
   return Status::OK();
@@ -864,7 +868,9 @@ Status EVRestorePrepareShape(BundleReader* reader,
   }
 }
 
+template<typename K, typename V>
 Status EVRestoreNoPartiton(EmbeddingVar<K, V>* ev, BundleReader* reader,
+    const std::string& name_string,
     const std::string& tensor_key, const std::string& tensor_value,
     const std::string& tensor_version, std::string tensor_freq,
     bool reset_version = false) {
@@ -897,7 +903,7 @@ Status EVRestoreNoPartiton(EmbeddingVar<K, V>* ev, BundleReader* reader,
     int64 tot_key_filter_num = key_filter_shape.dim_size(0);
     st = EVRestoreFilter(tot_key_filter_num, restore_buff,
                     ev, tensor_key, tensor_version, tensor_freq, reset_version,
-                    0, 0, 0, 1, 0, 1);
+                    0, 0, 0, 1, 0, 1, has_filter, reset_version);
   }
   return st;
 }
@@ -1099,7 +1105,6 @@ Status EVRestoreImpl(EmbeddingVar<K, V>* ev,
     bool reset_version = false, const Eigen::GpuDevice* device = nullptr) {
   
   Status s;
-  //TODO: support change the partition number
   std::string ssd_emb_file_name, ssd_record_file_name;
   if (HasSsdFile(name_string, ssd_record_file_name, ssd_emb_file_name)) {
     ev->ImportSsdData(ssd_record_file_name, ssd_emb_file_name);
@@ -1108,7 +1113,7 @@ Status EVRestoreImpl(EmbeddingVar<K, V>* ev,
   // first check whether there is partition
   if (name_string.find(part_str) == std::string::npos) {
     s = EVRestoreNoPartiton(
-        ev, reader, name_string + key_suffix,
+        ev, reader, name_string, name_string + key_suffix,
         name_string + value_suffix, name_string + version_suffix,
         name_string + freq_suffix, device, reset_version);
     if (!s.ok()) {
@@ -1139,7 +1144,7 @@ Status EVRestoreImpl(EmbeddingVar<K, V>* ev,
 }
 
 inline bool HasSsdFile(const std::string& file_name,
-                       std::string& ssd_record_file_name
+                       std::string& ssd_record_file_name,
                         std::string& ssd_emb_file_name) {
   std::string name_string_temp(name_string);
   std::string new_str = "_";
@@ -1176,7 +1181,7 @@ int64 ReadRecord(
   size_t bytes_read = 0;
   *buffer = new K[shape.dim_size(0)];
   reader->LookupSegment(
-      record_key, sizeof(K) * shape.dim_size(0),
+      record_key, 0, sizeof(K) * shape.dim_size(0),
       (char*)*buffer, bytes_read);
   return shape.dim_size(0);
 }

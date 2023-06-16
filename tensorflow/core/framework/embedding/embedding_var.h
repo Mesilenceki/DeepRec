@@ -501,9 +501,9 @@ class EmbeddingVar : public ResourceBase {
       K* hbm_ids = new K[num_of_hbm_ids];
       int64* hbm_freqs = new int64[num_of_hbm_ids];
       int64* hbm_versions = nullptr;
-      cache_for_restore_hbm->get_cached_ids(
+      Cache()->get_cached_ids(
           hbm_ids, num_of_hbm_ids, hbm_versions, hbm_freqs);
-      storage_->ImportToHbm(ids, size,
+      storage_->ImportToHbm(hbm_ids, num_of_hbm_ids,
         value_len_, emb_config_.emb_index);
       storage_->Schedule([this, hbm_ids, num_of_hbm_ids,
                                         hbm_versions, hbm_freqs]() {
@@ -515,7 +515,6 @@ class EmbeddingVar : public ResourceBase {
     }
   }
 
-  template<typename K>
   void ImportSsdData(const std::string& ssd_record_file_name,
                         const std::string& ssd_emb_file_name) {
     if (IsUsePersistentStorage()) {
