@@ -213,7 +213,8 @@ class DramSsdHashStorage : public MultiTierStorage<K, V> {
   void RestoreSsdRecord(int64* file_list, int64* invalid_record_count_list,
                         int64* record_count_list, K* key_list,
                         int64* key_file_id_list, int64* key_offset_list,
-                        int num_of_files, int num_of_keys) override {
+                        int num_of_files, int num_of_keys,
+                        const std::string& ssd_emb_file_name) override {
     
     //RestoreSsdHashmap
     std::map<int64, int64> file_id_map;

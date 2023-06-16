@@ -383,7 +383,7 @@ class KvResourceImportV3Op: public AsyncOpKernel {
     EVRestoreImpl(
         ev, name_string, file_name_string, partition_id_, partition_num_, &reader,
         "-partition_offset", "-keys", "-values", "-versions", "-freqs",
-        reset_version_, ev_ctx);
+        reset_version_);
     ev->SetInitialized();
     done();
   }

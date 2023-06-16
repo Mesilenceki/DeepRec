@@ -1025,7 +1025,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev, BundleReader* reader,
               << ", keynum:" << tot_key_num;
 
       st = EVRestoreData(tensor_key, tensor_value, tensor_version, tensor_freq,
-                         reader, ev, old_dim, new_dim, tot_key_num,
+                         reader, restore_buff, ev, old_dim, new_dim, tot_key_num,
                          key_part_offset, value_part_offset,
                          version_part_offset, freq_part_offset,
                          kSavedPartitionNum, partition_id, partition_num);
@@ -1133,7 +1133,7 @@ inline bool HasSsdFile(const std::string& file_name,
 
 template <typename K, typename V>
 Status EVRestoreImpl(EmbeddingVar<K, V>* ev, const std::string& name_string,
-                     std::string& file_name_string, int partition_id,
+                     const std::string& file_name_string, int partition_id,
                      int partition_num, BundleReader* reader,
                      const std::string& part_offset_tensor_suffix,
                      const std::string& key_suffix,
