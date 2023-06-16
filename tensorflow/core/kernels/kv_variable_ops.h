@@ -716,19 +716,20 @@ Status EVRestoreFilter(int64 tot_key_filter_num, RestoreBuffer& restore_buff,
 
 template<typename K, typename V>
 Status EVRestoreData(BundleReader* reader, RestoreBuffer& restore_buff, EmbeddingVar<K, V> ev,
-                  size_t value_unit_bytes,
-                  size_t value_unit_bytes_new, int64 tot_key_num,
-                  const std::string& tensor_key, const std::string& tensor_value,
-                  const std::string& tensor_version, const std::string& tensor_freq,
-                  int64 key_offset, int64 value_offset, int64 version_offset,
-                  int64 freq_offset, int partition_id, int partition_num,
-                  bool filter_flag, bool reset_version) {
+                     int64 old_dim, int64 new_dim, int64 tot_key_num,
+                      const std::string& tensor_key, const std::string& tensor_value,
+                      const std::string& tensor_version, const std::string& tensor_freq,
+                      int64 key_offset, int64 value_offset, int64 version_offset,
+                      int64 freq_offset, int partition_id, int partition_num,
+                      bool filter_flag, bool reset_version) {
   //Restore key
   Status st;
   bool restore_customDim;
   TF_CHECK_OK(ReadBoolFromEnvVar(
                                 "TF_EV_RESTORE_CUSTOM_DIM", false, &restore_customDim));
 
+  size_t value_unit_bytes_new = sizeof(V) * new_dim;
+  size_t value_unit_bytes = sizeof(V) *  old_dim;
   int64 idx = 0;
   size_t key_bytes_read = 0;
   size_t value_bytes_read = 0;
@@ -780,9 +781,9 @@ Status EVRestoreData(BundleReader* reader, RestoreBuffer& restore_buff, Embeddin
     if (key_bytes_read > 0) {
       read_key_num = key_bytes_read / sizeof(K);
       VLOG(2) << "restore, read_key_num:" << read_key_num;
-      if (restore_customDim && value_shape.dim_size(1) != ev->ValueLen()) {
+      if (restore_customDim && old_dim != ev->ValueLen()) {
         VLOG(2) << "restore, read_value_reshape dim: from "
-                << value_shape.dim_size(1) << " to " << ev->ValueLen();
+                << old_dim << " to " << ev->ValueLen();
         if (read_key_num * value_unit_bytes != value_bytes_read) {
           return tensorflow::errors::FailedPrecondition(
               "Expected read_key_num * value_unit_bytes == "
@@ -797,7 +798,7 @@ Status EVRestoreData(BundleReader* reader, RestoreBuffer& restore_buff, Embeddin
           memcpy(tmp_ptr.get() + i * value_unit_bytes_new,
                   restore_buff.value_buffer + i * value_unit_bytes,
                   read_once);
-          if (value_shape.dim_size(1) >= ev->ValueLen()) continue;
+          if (old_dim >= ev->ValueLen()) continue;
           auto p = ev->GetDefaultValue(idx);
           ++idx;
           memcpy(tmp_ptr.get() + i * value_unit_bytes_new +
@@ -855,12 +856,11 @@ Status DynamicRestoreValue(EmbeddingVar<K, V>* ev, BundleReader* reader,
         has_freq, has_filter);
 
     RestoreBuffer restore_buff(buffer_size);
-    int64 newDim = ev->ValueLen();
-    size_t value_unit_bytes_new = sizeof(V) * newDim;
-    size_t value_unit_bytes = sizeof(V) *  value_shape.dim_size(1);
+    int64 new_dim = ev->ValueLen();
+    int64 old_dim = value_shape.dim_size(1);
     int64 tot_key_num = key_shape.dim_size(0);
 
-    st = EVRestoreData(reader, ev, value_unit_bytes, value_unit_bytes_new, tot_key_num,
+    st = EVRestoreData(reader, ev, old_dim, new_dim, tot_key_num,
             tensor_key, tensor_value, tensor_version, tensor_freq,
             key_shape, value_shape, version_shape, freq_shape,
             kSavedPartitionNum, partition_id, partition_num, has_filter, reset_version);
@@ -897,11 +897,10 @@ Status EVRestoreNoPartiton(EmbeddingVar<K, V>* ev, BundleReader* reader,
 
   RestoreBuffer restore_buff(buffer_size);
   
-  int64 newDim = ev->ValueLen();
-  size_t value_unit_bytes = sizeof(V) *  value_shape.dim_size(1);
-  size_t value_unit_bytes_new = sizeof(V) * newDim;
+  int64 new_dim = ev->ValueLen();
+  int64 old_dim = value_shape.dim_size(1);
   int64 tot_key_num = key_shape.dim_size(0);
-  st = EVRestoreData(reader, restore_buff, ev, value_unit_bytes, value_unit_bytes_new, tot_key_num,
+  st = EVRestoreData(reader, restore_buff, ev, old_dim, new_dim, tot_key_num,
              tensor_key, tensor_value, tensor_version, tensor_freq, 0, 0, 0, 0, 1, 0, 1);
 
   if (has_filter) {
@@ -943,8 +942,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev,
 
   RestoreBuffer restore_buff(buffer_size);
 
-  int64 newDim = ev->ValueLen();
-  size_t value_unit_bytes_new = sizeof(V) * newDim;
+  int64 new_dim = ev->ValueLen();
   bool restore_customDim;
   TF_CHECK_OK(ReadBoolFromEnvVar(
               "TF_EV_RESTORE_CUSTOM_DIM", false, &restore_customDim));
@@ -1006,7 +1004,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev,
     for (size_t i = 0; i < loaded_parts.size(); i++) {
       int subpart_id = loaded_parts[i];
       int subpart_offset = part_offset_flat(subpart_id);
-      size_t value_unit_bytes = sizeof(V) *  value_shape.dim_size(1);
+      int64 old_dim = value_shape.dim_size(1);
 
       int64 tot_key_num = part_offset_flat(subpart_id + 1) - subpart_offset;
       int64 key_part_offset = subpart_offset * sizeof(K);
@@ -1022,7 +1020,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev,
               << ", partition_num:" << partition_num
               << ", keynum:" << tot_key_num;
 
-      st = EVRestoreData(reader, ev, value_unit_bytes, value_unit_bytes_new, tot_key_num,
+      st = EVRestoreData(reader, ev, old_dim, new_dim, tot_key_num,
             tensor_key, tensor_value, tensor_version, tensor_freq,
             key_part_offset, value_part_offset, version_part_offset, freq_part_offset,
             kSavedPartitionNum, partition_id, partition_num);
@@ -1035,7 +1033,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev,
         int64 version_filter_part_offset = subpart_filter_offset * sizeof(int64);
         int64 freq_filter_part_offset = subpart_filter_offset * sizeof(int64);
         EVRestoreFilter(tot_key_filter_num, restore_buff, ev,
-                        tensor_key, tensor_version, tensor_freq, reset_version
+                        tensor_key, tensor_version, tensor_freq, reset_version,
                         key_filter_part_offset, version_filter_part_offset,
                         freq_filter_part_offset, partition_id, partition_num);
       }
@@ -1165,7 +1163,7 @@ Status EVRestoreImpl(EmbeddingVar<K, V>* ev,
   } 
 
   s = EVRestoreWithPartition(ev, reader, name_string, 
-      key_suffix, value_suffix, version_suffix, freq_suffix, part_offset_tensor_suffix
+      key_suffix, value_suffix, version_suffix, freq_suffix, part_offset_tensor_suffix,
       partition_id, partition_num, reset_version);
   if (!s.ok()) {
     LOG(FATAL) <<  "EV restoring fail:" << s.ToString();
@@ -1206,7 +1204,7 @@ void ReadSsdRecord(
   BundleReader ssd_record_reader(Env::Default(),
                                  ssd_record_file_name);
   //Read the data of embedding files
-  int64 num_of_files =
+  num_of_files =
       ReadRecord(&ssd_record_reader, "files", &file_list);
   ReadRecord(&ssd_record_reader,
              "invalid_record_count",
