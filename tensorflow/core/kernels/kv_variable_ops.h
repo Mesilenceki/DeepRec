@@ -776,7 +776,7 @@ Status DynamicRestoreValue(EmbeddingVar<K, V>* ev, BundleReader* reader,
     string tensor_freq = tensor_name + "-freqs";
     
     TensorShape key_shape, value_shape, version_shape, freq_shape;
-    EVRestorePrepareShape(reader, tensor_key, tensor_value, 
+    EVRestorePrepareShape<K, V>(reader, tensor_key, tensor_value, 
         tensor_version, tensor_freq, &key_shape, value_shape,
         version_shape, freq_shape, nullptr, nullptr, nullptr, nullptr,
         has_freq, has_filter);
@@ -921,7 +921,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev,
           << ", partition_id:" << partition_id
           << ", partition_num:" << partition_num;
 
-
+  const string& curr_partid_str = std::to_string(partition_id);
   // first find out which sub parts we should load
   std::vector<int> loaded_parts;
   for (int i = 0; i < kSavedPartitionNum; i++) {
@@ -1022,7 +1022,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev,
             key_part_offset, value_part_offset, version_part_offset, freq_part_offset,
             kSavedPartitionNum, partition_id, partition_num);
 
-      if (restore_filter_flag) {
+      if (has_filter) {
         int subpart_filter_offset = part_filter_offset_flat(subpart_id);
         int64 tot_key_filter_num =
             part_filter_offset_flat(subpart_id + 1) - subpart_filter_offset;
@@ -1098,6 +1098,29 @@ Status EVRestoreOldFromCheckpoint(EmbeddingVar<K, V>* ev,
   return s;
 }
 
+inline bool HasSsdFile(const std::string& file_name,
+                       const std::string& file_name_string,
+                       std::string& ssd_record_file_name,
+                        std::string& ssd_emb_file_name) {
+  std::string name_string_temp(file_name);
+  std::string new_str = "_";
+  int64 pos = name_string_temp.find("/");
+  while (pos != std::string::npos) {
+    name_string_temp.replace(pos, 1, new_str.data(), 1);
+    pos = name_string_temp.find("/");
+  }
+
+  ssd_record_file_name =
+      file_name_string + "-" + name_string_temp + "-ssd_record";
+  ssd_emb_file_name = 
+      file_name_string + "-" + name_string_temp + "-emb_files";
+  if (Env::Default()->FileExists(ssd_record_file_name + ".index").ok()) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
 template<typename K, typename V>
 Status EVRestoreImpl(EmbeddingVar<K, V>* ev,
     const std::string& name_string, std::string& file_name_string,
@@ -1146,29 +1169,6 @@ Status EVRestoreImpl(EmbeddingVar<K, V>* ev,
   }
   //TODO Restore no partition checkpoint with partitioned variable
   return Status::OK();
-}
-
-inline bool HasSsdFile(const std::string& file_name,
-                       const std::string& file_name_string,
-                       std::string& ssd_record_file_name,
-                        std::string& ssd_emb_file_name) {
-  std::string name_string_temp(file_name);
-  std::string new_str = "_";
-  int64 pos = name_string_temp.find("/");
-  while (pos != std::string::npos) {
-    name_string_temp.replace(pos, 1, new_str.data(), 1);
-    pos = name_string_temp.find("/");
-  }
-
-  ssd_record_file_name =
-      file_name_string + "-" + name_string_temp + "-ssd_record";
-  ssd_emb_file_name = 
-      file_name_string + "-" + name_string_temp + "-emb_files";
-  if (Env::Default()->FileExists(ssd_record_file_name + ".index").ok()) {
-    return true;
-  } else {
-    return false;
-  }
 }
 
 template<class K>
