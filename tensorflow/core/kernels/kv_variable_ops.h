@@ -608,7 +608,7 @@ Status EVRestoreTensorShape(BundleReader* reader,
     const std::string& tensor_version, const std::string& tensor_freq,
     TensorShape* key_shape, TensorShape* value_shape, 
     TensorShape* version_shape, TensorShape* freq_shape, 
-    TensorShape* key_filter_shape, TensorShape* value_filter_shape, 
+    TensorShape* key_filter_shape,
     TensorShape* freq_filter_shape,TensorShape* version_filter_shape,
     bool has_freq, bool has_filter) {
   Status st = reader->LookupTensorShape(tensor_key, key_shape);
@@ -850,7 +850,7 @@ Status DynamicRestoreValue(EmbeddingVar<K, V>* ev, BundleReader* reader,
     TensorShape key_shape, value_shape, version_shape, freq_shape;
     EVRestoreTensorShape<K, V>(
         reader, tensor_key, tensor_value, tensor_version, tensor_freq,
-        &key_shape, value_shape, version_shape, freq_shape, nullptr, nullptr,
+        &key_shape, value_shape, version_shape, freq_shape, nullptr,
         nullptr, nullptr, has_freq, has_filter);
 
     RestoreBuffer restore_buff(buffer_size);
