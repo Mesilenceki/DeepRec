@@ -600,6 +600,79 @@ size_t buffer_size = 8 << 20;
 // "-partition_offset", "-keys", "-values", "-versions", "-freqs"
 }
 
+template<typename K, typename V>
+Status EVRestorePrepareShape(BundleReader* reader,
+    const std::string& tensor_key, const std::string& tensor_value,
+    const std::string& tensor_version, const std::string& tensor_freq,
+    TensorShape* key_shape, TensorShape* value_shape, 
+    TensorShape* version_shape, TensorShape* freq_shape, 
+    TensorShape* key_filter_shape, TensorShape* value_filter_shape, 
+    TensorShape* freq_filter_shape,TensorShape* version_filter_shape,
+    bool has_freq, bool has_filter) {
+  Status st = reader->LookupTensorShape(tensor_key, key_shape);
+  if (!st.ok()) {
+    VLOG(1) << "ev part " << tensor_key
+            << " not exist, reach the end of restoring";
+    return st;
+  }
+  st = reader->LookupTensorShape(tensor_value, value_shape);
+  st = reader->LookupTensorShape(tensor_version, version_shape);
+  st = reader->LookupHeader(tensor_key,
+      sizeof(K) * key_shape->dim_size(0));
+  st = reader->LookupHeader(tensor_value,
+      sizeof(V) * value_shape->dim_size(0) * value_shape->dim_size(1));
+  st = reader->LookupHeader(tensor_version,
+      sizeof(int64) * version_shape->dim_size(0));
+  if (!st.ok())
+    return st;
+  if (has_freq) {
+    st = reader->LookupTensorShape(tensor_freq, freq_shape);
+    st = reader->LookupHeader(tensor_freq,
+      sizeof(int64) * freq_shape->dim_size(0));
+  }
+
+  if (has_filter) {
+    st = reader->LookupTensorShape(tensor_key + "_filtered", key_filter_shape);
+    if (!st.ok()) {
+      if (st.code() == error::NOT_FOUND) {
+        *key_filter_shape = *key_shape;
+      }else {
+        return st;
+      }
+    }
+    st = reader->LookupTensorShape(tensor_version + "_filtered",
+        version_filter_shape);
+    if (!st.ok()) {
+      if (st.code() == error::NOT_FOUND) {
+        *version_filter_shape = *version_shape;
+      }else {
+        return st;
+      }
+    }
+    st = reader->LookupHeader(tensor_key + "_filtered",
+        sizeof(K) * key_filter_shape->dim_size(0));
+    st = reader->LookupHeader(tensor_version + "_filtered",
+        sizeof(K) * version_filter_shape->dim_size(0));
+
+    if (has_freq) {
+      st = reader->LookupTensorShape(tensor_freq + "_filtered",
+        freq_filter_shape);
+      if (!st.ok()) {
+        if (st.code() == error::NOT_FOUND) {
+          *freq_filter_shape = *freq_shape;
+        }else {
+          return st;
+        }
+      }
+      st = reader->LookupHeader(tensor_freq + "_filtered",
+          sizeof(K) * freq_filter_shape->dim_size(0));
+      if (!st.ok() && st.code() != error::NOT_FOUND){
+        return st;
+      }
+    }
+  }
+}
+
 //Restore filter
 template<typename K, typename V>
 Status EVRestoreFilter(int64 tot_key_filter_num, RestoreBuffer& restore_buff,
@@ -797,88 +870,19 @@ Status DynamicRestoreValue(EmbeddingVar<K, V>* ev, BundleReader* reader,
 }
 
 template<typename K, typename V>
-Status EVRestorePrepareShape(BundleReader* reader,
-    const std::string& tensor_key, const std::string& tensor_value,
-    const std::string& tensor_version, const std::string& tensor_freq,
-    TensorShape* key_shape, TensorShape* value_shape, 
-    TensorShape* version_shape, TensorShape* freq_shape, 
-    TensorShape* key_filter_shape, TensorShape* value_filter_shape, 
-    TensorShape* freq_filter_shape,TensorShape* version_filter_shape,
-    bool has_freq, bool has_filter) {
-  Status st = reader->LookupTensorShape(tensor_key, key_shape);
-  if (!st.ok()) {
-    VLOG(1) << "ev part " << tensor_key
-            << " not exist, reach the end of restoring";
-    return st;
-  }
-  st = reader->LookupTensorShape(tensor_value, value_shape);
-  st = reader->LookupTensorShape(tensor_version, version_shape);
-  st = reader->LookupHeader(tensor_key,
-      sizeof(K) * key_shape->dim_size(0));
-  st = reader->LookupHeader(tensor_value,
-      sizeof(V) * value_shape->dim_size(0) * value_shape->dim_size(1));
-  st = reader->LookupHeader(tensor_version,
-      sizeof(int64) * version_shape->dim_size(0));
-  if (!st.ok())
-    return st;
-  if (has_freq) {
-    st = reader->LookupTensorShape(tensor_freq, freq_shape);
-    st = reader->LookupHeader(tensor_freq,
-      sizeof(int64) * freq_shape->dim_size(0));
-  }
-
-  if (has_filter) {
-    st = reader->LookupTensorShape(tensor_key + "_filtered", key_filter_shape);
-    if (!st.ok()) {
-      if (st.code() == error::NOT_FOUND) {
-        *key_filter_shape = *key_shape;
-      }else {
-        return st;
-      }
-    }
-    st = reader->LookupTensorShape(tensor_version + "_filtered",
-        version_filter_shape);
-    if (!st.ok()) {
-      if (st.code() == error::NOT_FOUND) {
-        *version_filter_shape = *version_shape;
-      }else {
-        return st;
-      }
-    }
-    st = reader->LookupHeader(tensor_key + "_filtered",
-        sizeof(K) * key_filter_shape->dim_size(0));
-    st = reader->LookupHeader(tensor_version + "_filtered",
-        sizeof(K) * version_filter_shape->dim_size(0));
-
-    if (has_freq) {
-      st = reader->LookupTensorShape(tensor_freq + "_filtered",
-        freq_filter_shape);
-      if (!st.ok()) {
-        if (st.code() == error::NOT_FOUND) {
-          *freq_filter_shape = *freq_shape;
-        }else {
-          return st;
-        }
-      }
-      st = reader->LookupHeader(tensor_freq + "_filtered",
-          sizeof(K) * freq_filter_shape->dim_size(0));
-      if (!st.ok() && st.code() != error::NOT_FOUND){
-        return st;
-      }
-    }
-  }
-}
-
-template<typename K, typename V>
 Status EVRestoreNoPartiton(EmbeddingVar<K, V>* ev, BundleReader* reader,
     const std::string& name_string,
-    const std::string& tensor_key, const std::string& tensor_value,
-    const std::string& tensor_version, std::string tensor_freq,
+    const std::string& key_suffix, const std::string& value_suffix,
+    const std::string& version_suffix, const std::string& freq_suffix,
     bool reset_version = false) {
   
   TensorShape key_shape, value_shape, version_shape, freq_shape;
   TensorShape key_filter_shape, version_filter_shape, freq_filter_shape;
   bool has_filter, has_freq;
+  string tensor_key = name_string + key_suffix;
+  string tensor_value = name_string + value_suffix;
+  string tensor_version = name_string + version_suffix;
+  string tensor_freq = name_string + freq_suffix;
 
   Status st = EVRestorePrepareShape<K, V>(reader, tensor_key, tensor_value,
       tensor_version, tensor_freq, &key_shape, &value_shape,
@@ -914,6 +918,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev,
     BundleReader* reader, const std::string& name_string,
     const std::string& key_suffix, const std::string& value_suffix,
     const std::string& version_suffix, const std::string& freq_suffix,
+    const std::string& part_offset_tensor_suffix,
     int partition_id, int partition_num, bool reset_version) {
   // then we use primary partition number to compose with
   // sub partition number
@@ -1139,9 +1144,8 @@ Status EVRestoreImpl(EmbeddingVar<K, V>* ev,
   // first check whether there is partition
   if (name_string.find(part_str) == std::string::npos) {
     s = EVRestoreNoPartiton(
-        ev, reader, name_string, name_string + key_suffix,
-        name_string + value_suffix, name_string + version_suffix,
-        name_string + freq_suffix, device, reset_version);
+        ev, reader, name_string, key_suffix,
+        value_suffix, version_suffix, freq_suffix, device, reset_version);
     if (!s.ok()) {
       LOG(FATAL) <<  "EV restoring fail:" << s.ToString();
     }
@@ -1161,7 +1165,7 @@ Status EVRestoreImpl(EmbeddingVar<K, V>* ev,
   } 
 
   s = EVRestoreWithPartition(ev, reader, name_string, 
-      key_suffix, value_suffix, version_suffix, freq_suffix,
+      key_suffix, value_suffix, version_suffix, freq_suffix, part_offset_tensor_suffix
       partition_id, partition_num, reset_version);
   if (!s.ok()) {
     LOG(FATAL) <<  "EV restoring fail:" << s.ToString();
