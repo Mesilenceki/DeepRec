@@ -973,7 +973,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev, BundleReader* reader,
     DataType part_offset_type, part_filter_offset_type;
     string offset_tensor_name = tensor_name + part_offset_tensor_suffix;
     string offset_filter_tensor_name =
-        tensor_name + part_offset_filter_tensor_suffix;
+        tensor_name + "-partition_filter_offset";
     st = reader->LookupDtypeAndShape(offset_tensor_name, &part_offset_type,
                                      &part_offset_shape);
     if (!st.ok()) {
@@ -1101,7 +1101,7 @@ Status EVRestoreOldFromCheckpoint(EmbeddingVar<K, V>* ev,
           << ", old partition_num:" << orig_partnum
           << ", new partition num:" << partition_num;
 
-  Status s = DynamicRestoreValue(ev, reader, name_string, orig_partnum, device,
+  Status s = DynamicRestoreValue(ev, reader, name_string, orig_partnum,
                                  partition_id, partition_num, reset_version);
   if (!s.ok()) {
     LOG(FATAL) << "EV restoring fail:" << s.ToString();
@@ -1157,7 +1157,7 @@ Status EVRestoreImpl(EmbeddingVar<K, V>* ev, const std::string& name_string,
     return s;
   }
 
-  auto is_oldform = IsOldCheckpoint(name_string, partiton_id, reader,
+  auto is_oldform = IsOldCheckpoint(name_string, partition_id, reader,
                                     part_offset_tensor_suffix);
   if (is_oldform) {
     s = EVRestoreOldFromCheckpoint(ev, name_string, key_suffix,
