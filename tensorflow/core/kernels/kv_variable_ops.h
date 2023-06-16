@@ -751,6 +751,7 @@ template<typename K, typename V>
 Status DynamicRestoreValue(EmbeddingVar<K, V>* ev, BundleReader* reader,
     std::string name_string, int orig_partnum, const GPUDevice* device,
     int64 partition_id = 0, int64 partition_num = 1, bool reset_version = false) {
+  Status st;
   string curr_partid_str = std::to_string(partition_id);
   bool has_filter = true;
   bool has_freq = true;
@@ -896,7 +897,7 @@ Status EVRestoreNoPartiton(EmbeddingVar<K, V>* ev, BundleReader* reader,
   size_t value_unit_bytes = sizeof(V) *  value_shape.dim_size(1);
   size_t value_unit_bytes_new = sizeof(V) * newDim;
   int64 tot_key_num = key_shape.dim_size(0);
-  st = EVRestoreData(reader, restore_buffer, ev, value_unit_bytes, value_unit_bytes_new, tot_key_num,
+  st = EVRestoreData(reader, restore_buff, ev, value_unit_bytes, value_unit_bytes_new, tot_key_num,
              tensor_key, tensor_value, tensor_version, tensor_freq, 0, 0, 0, 0, 1, 0, 1);
 
   if (has_filter) {
@@ -955,7 +956,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev,
     TensorShape key_shape, value_shape, version_shape, freq_shape;
     TensorShape key_filter_shape, version_filter_shape, freq_filter_shape;
     
-    Status st = EVRestorePrepareShape(reader, tensor_key, tensor_value,
+    Status st = EVRestorePrepareShape<K, V>(reader, tensor_key, tensor_value,
       tensor_version, tensor_freq, &key_shape, &value_shape,
       &version_shape, &freq_shape, &key_filter_shape, &version_filter_shape,
       &freq_filter_shape, filter_flag, restore_filter_flag);

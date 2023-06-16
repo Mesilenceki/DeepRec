@@ -210,7 +210,6 @@ class DramSsdHashStorage : public MultiTierStorage<K, V> {
     return key_list->size() + ssd_rec_desc->key_list.size();
   }
 
-  template<typename K>
   void RestoreSsdRecord(const std::string& ssd_record_file_name,
                         const std::string& ssd_emb_file_name) {
     std::vector<int64> file_list;
