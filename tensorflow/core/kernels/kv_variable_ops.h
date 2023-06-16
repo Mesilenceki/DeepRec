@@ -840,7 +840,7 @@ Status DynamicRestoreValue(EmbeddingVar<K, V>* ev, BundleReader* reader,
     string part_id = std::to_string(i);
     string pre_subname = name_string.substr(0, name_string.find("part_"));
     string post_subname = name_string.substr(
-        name_string.find("part_") + kPartStr.size() + curr_partid_str.size());
+        name_string.find("part_") + kPartStr.len() + curr_partid_str.size());
     string tensor_name = pre_subname + kPartStr + part_id + post_subname;
 
     string tensor_key = tensor_name + "-keys";
@@ -906,7 +906,7 @@ Status EVRestoreNoPartiton(EmbeddingVar<K, V>* ev, BundleReader* reader,
   if (has_filter) {
     int64 tot_key_filter_num = key_filter_shape.dim_size(0);
     st = EVRestoreFilter(tensor_key, tensor_version, tensor_freq, reset_version,
-                         reader, restore_buff, ev, tot_key_filter_num 0, 0, 0,
+                         reader, restore_buff, ev, tot_key_filter_num, 0, 0, 0,
                          1, 0, 1, reset_version);
   }
   return st;
@@ -954,7 +954,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev, BundleReader* reader,
     string part_id = std::to_string(orig_partnum);
     string pre_subname = name_string.substr(0, name_string.find(kPartStr));
     string post_subname = name_string.substr(
-        name_string.find(kPartStr) + kPartStr.size() + curr_partid_str.size());
+        name_string.find(kPartStr) + kPartStr.len() + curr_partid_str.size());
     string tensor_name = pre_subname + kPartStr + part_id + post_subname;
     string tensor_key = tensor_name + key_suffix;
     string tensor_value = tensor_name + value_suffix;
@@ -1040,7 +1040,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev, BundleReader* reader,
         int64 freq_filter_part_offset = subpart_filter_offset * sizeof(int64);
         EVRestoreFilter(
             tensor_key, tensor_version, tensor_freq, reader, restore_buff, ev,
-            tot_key_filter_num key_filter_part_offset,
+            tot_key_filter_num, key_filter_part_offset,
             version_filter_part_offset, freq_filter_part_offset,
             kSavedPartitionNum, partition_id, partition_num, reset_version);
       }
@@ -1058,7 +1058,7 @@ inline bool IsOldCheckpoint(const std::string& name_string,
   string part_id = std::to_string(0);
   string pre_subname = name_string.substr(0, name_string.find(kPartStr));
   string post_subname = name_string.substr(
-      name_string.find(kPartStr) + kPartStr.size() + curr_partid_str.size());
+      name_string.find(kPartStr) + kPartStr.len() + curr_partid_str.size());
   string tensor_name = pre_subname + kPartStr + part_id + post_subname;
 
   TensorShape part_offset_shape;
@@ -1086,7 +1086,7 @@ Status EVRestoreOldFromCheckpoint(EmbeddingVar<K, V>* ev,
     string part_id = std::to_string(orig_partnum);
     string pre_subname = name_string.substr(0, name_string.find(kPartStr));
     string post_subname = name_string.substr(
-        name_string.find(kPartStr) + kPartStr.size() + curr_partid_str.size());
+        name_string.find(kPartStr) + kPartStr.len() + curr_partid_str.size());
     string tensor_name = pre_subname + kPartStr + part_id + post_subname;
 
     string tensor_key = tensor_name + key_suffix;
@@ -1135,8 +1135,7 @@ inline bool HasSsdFile(const std::string& file_name,
 template <typename K, typename V>
 Status EVRestoreImpl(EmbeddingVar<K, V>* ev, const std::string& name_string,
                      std::string& file_name_string, int partition_id,
-                     int partition_num, OpKernelContext* context,
-                     BundleReader* reader,
+                     int partition_num, BundleReader* reader,
                      const std::string& part_offset_tensor_suffix,
                      const std::string& key_suffix,
                      const std::string& value_suffix,

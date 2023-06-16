@@ -259,7 +259,7 @@ class KvResourceImportV2Op: public AsyncOpKernel {
       }
 
       EVRestoreImpl(
-          ev, name_string, file_name_string, partition_id_, partition_num_, context, &reader,
+          ev, name_string, file_name_string, partition_id_, partition_num_, &reader,
           "-partition_offset", "-keys", "-values", "-versions", "-freqs",
           reset_version_);
       ev->SetInitialized();
@@ -374,22 +374,20 @@ class KvResourceImportV3Op: public AsyncOpKernel {
                   << s.ToString();
     }
 
-    if (ev->IsSingleHbm()) {
 #if GOOGLE_CUDA
-        se::cuda::ScopedActivateExecutorContext scoped_activation{
-            context->op_device_context()->stream()->parent()};
-        const Eigen::GpuDevice& device = context->eigen_gpu_device();
-        EVRestoreImpl(
-            ev, name_string, file_name_string, partition_id_, partition_num_, context, &reader,
-            "-partition_offset", "-keys", "-values", "-versions", "-freqs",
-            reset_version_, &device);
+    se::cuda::ScopedActivateExecutorContext scoped_activation{
+        context->op_device_context()->stream()->parent()};
+    const Eigen::GpuDevice& device = context->eigen_gpu_device();
+    EVRestoreImpl(
+        ev, name_string, file_name_string, partition_id_, partition_num_, &reader,
+        "-partition_offset", "-keys", "-values", "-versions", "-freqs",
+        reset_version_, &device);
+#else
+    EVRestoreImpl(
+        ev, name_string, file_name_string, partition_id_, partition_num_, &reader,
+        "-partition_offset", "-keys", "-values", "-versions", "-freqs",
+        reset_version_, nullptr);
 #endif
-      } else {
-        EVRestoreImpl(
-            ev, name_string, file_name_string, partition_id_, partition_num_, context, &reader,
-            "-partition_offset", "-keys", "-values", "-versions", "-freqs",
-            reset_version_, nullptr);
-      }
     ev->SetInitialized();
     done();
   }
@@ -467,7 +465,7 @@ class KvResourceIncrImportOp: public AsyncOpKernel {
               << partition_num_;
 
     EVRestoreImpl(
-        ev, name_string, file_name_string, partition_id_, partition_num_, context, &reader,
+        ev, name_string, file_name_string, partition_id_, partition_num_, &reader,
         "-incr_partition_offset", "-sparse_incr_keys", "-sparse_incr_values",
         "-sparse_incr_versions", "-sparse_incr_freqs");
     ev->SetInitialized();
