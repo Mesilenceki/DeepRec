@@ -531,7 +531,7 @@ class EmbeddingVar : public ResourceBase {
         num_of_files, ssd_record_file_name);
     storage_->RestoreSsdRecord(file_list.data(), invalid_record_count_list.data(),
         record_count_list.data(), key_list.data(), key_file_id_list.data(),
-        key_offset_list.data(), num_of_keys, num_of_files);
+        key_offset_list.data(), num_of_keys, num_of_files, ssd_emb_file_name);
   } else {
     std::vector<K> key_list;
     std::vector<int64> key_file_id_list;

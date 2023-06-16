@@ -824,8 +824,7 @@ Status EVRestoreData(const std::string& tensor_key,
 template <typename K, typename V>
 Status DynamicRestoreValue(EmbeddingVar<K, V>* ev, BundleReader* reader,
                            std::string name_string, int orig_partnum,
-                           const GPUDevice* device, int64 partition_id = 0,
-                           int64 partition_num = 1,
+                           int64 partition_id = 0, int64 partition_num = 1,
                            bool reset_version = false) {
   Status st;
   string curr_partid_str = std::to_string(partition_id);
@@ -905,7 +904,7 @@ Status EVRestoreNoPartiton(EmbeddingVar<K, V>* ev, BundleReader* reader,
 
   if (has_filter) {
     int64 tot_key_filter_num = key_filter_shape.dim_size(0);
-    st = EVRestoreFilter(tensor_key, tensor_version, tensor_freq, reset_version,
+    st = EVRestoreFilter(tensor_key, tensor_version, tensor_freq,
                          reader, restore_buff, ev, tot_key_filter_num, 0, 0, 0,
                          1, 0, 1, reset_version);
   }
@@ -1028,7 +1027,8 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev, BundleReader* reader,
                          reader, restore_buff, ev, old_dim, new_dim, tot_key_num,
                          key_part_offset, value_part_offset,
                          version_part_offset, freq_part_offset,
-                         kSavedPartitionNum, partition_id, partition_num);
+                         kSavedPartitionNum, partition_id, partition_num,
+                         has_filter, reset_version);
 
       if (has_filter) {
         int subpart_filter_offset = part_filter_offset_flat(subpart_id);
