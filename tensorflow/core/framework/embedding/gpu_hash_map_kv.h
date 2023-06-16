@@ -65,8 +65,7 @@ class GPUHashMapKV : public KVInterface<K, V> {
 
   void SetValueLen(int64 value_len) { value_len_ = value_len; }
 
-  Status BatchLookupOrCreateKeys(const K* keys, size_t n, int32* item_idxs,
-                                 const Eigen::GpuDevice& device) {
+  Status BatchLookupOrCreateKeys(const K* keys, size_t n, int32* item_idxs) {
     mutex_lock lock(lock_);
     int remaining_size =
         n + *(hash_table_->start_idx) -
@@ -76,7 +75,7 @@ class GPUHashMapKV : public KVInterface<K, V> {
     }
     functor::KvLookupInsertKey<Eigen::GpuDevice, K, V>()(
         keys, item_idxs, n, hash_table_, hash_table_->start_idx,
-        device.stream());
+        NULL);
     return Status::OK();
   }
 
@@ -86,7 +85,7 @@ class GPUHashMapKV : public KVInterface<K, V> {
                              const Eigen::GpuDevice& device) {
     int32* item_idxs =
         TypedAllocator::Allocate<int32>(alloc_, n, AllocationAttributes());
-    BatchLookupOrCreateKeys(keys, n, item_idxs, device);
+    BatchLookupOrCreateKeys(keys, n, item_idxs);
     functor::KvLookupCreateEmb<Eigen::GpuDevice, K, V>()(
         keys, val, default_v, value_len_, item_idxs, n, config_.emb_index,
         default_v_num, is_use_default_value_tensor, hash_table_->d_bank_ptrs,
@@ -140,10 +139,9 @@ class GPUHashMapKV : public KVInterface<K, V> {
 
   Status Import(const std::vector<K>& key_import,
                 const std::vector<V>& value_import,
-                const Eigen::GpuDevice* device,
                 const EmbeddingConfig& emb_config) {
     int n = key_import.size();
-    auto stream = device->stream();
+    // auto stream = device->stream();
 
     if (is_inference_) {
       if (n == 0) {
@@ -152,19 +150,19 @@ class GPUHashMapKV : public KVInterface<K, V> {
         return Status::OK();
       }
       static_hash_table_ =
-          new GPUStaticHashTable<K, V>(n, value_len_, -1, -1, alloc_, stream);
+          new GPUStaticHashTable<K, V>(n, value_len_, -1, -1, alloc_, NULL);
       K* keys_d =
           TypedAllocator::Allocate<K>(alloc_, n, AllocationAttributes());
       cudaMemcpyAsync(keys_d, key_import.data(), n * sizeof(K),
-                      cudaMemcpyHostToDevice, stream);
+                      cudaMemcpyHostToDevice, NULL);
       static_hash_table_->values_d = TypedAllocator::Allocate<V>(
           alloc_, value_import.size(), AllocationAttributes());
       cudaMemcpyAsync(static_hash_table_->values_d, value_import.data(),
                       value_import.size() * sizeof(V), cudaMemcpyHostToDevice,
-                      stream);
+                      NULL);
       functor::KvInitStaticMap<Eigen::GpuDevice, K, V>()(
-          keys_d, static_hash_table_, n, value_len_, stream);
-      EventSynchronize(stream);
+          keys_d, static_hash_table_, n, value_len_, NULL);
+      EventSynchronize(NULL);
 
       TypedAllocator::Deallocate(alloc_, keys_d, n);
     } else {
@@ -175,21 +173,21 @@ class GPUHashMapKV : public KVInterface<K, V> {
             TypedAllocator::Allocate<K>(alloc_, n, AllocationAttributes());
         cudaMemcpyAsync(key_gpu, key_import.data(),
                         key_import.size() * sizeof(K), cudaMemcpyHostToDevice,
-                        stream);
-        BatchLookupOrCreateKeys(key_gpu, n, item_idxs, *device);
+                        NULL);
+        BatchLookupOrCreateKeys(key_gpu, n, item_idxs);
         V* value_gpu = TypedAllocator::Allocate<V>(alloc_, value_import.size(),
                                                    AllocationAttributes());
         cudaMemcpyAsync(value_gpu, value_import.data(),
                         value_import.size() * sizeof(V), cudaMemcpyHostToDevice,
-                        stream);
+                        NULL);
 
         functor::KvUpdateEmb<Eigen::GpuDevice, K, V>()(
             key_import.data(), value_gpu, value_len_, item_idxs, n,
             emb_config.emb_index, key_import.size(), hash_table_->d_bank_ptrs,
             hash_table_->d_existence_flag_ptrs,
             (emb_config.block_num * (1 + emb_config.slot_num)),
-            hash_table_->initial_bank_size, stream);
-        EventSynchronize(stream);
+            hash_table_->initial_bank_size, NULL);
+        EventSynchronize(NULL);
         TypedAllocator::Deallocate(alloc_, item_idxs, n);
         TypedAllocator::Deallocate(alloc_, value_gpu, value_import.size());
         TypedAllocator::Deallocate(alloc_, key_gpu, n);

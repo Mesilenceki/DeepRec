@@ -115,8 +115,7 @@ class Storage {
       int32 default_v_num, bool is_use_default_value_tensor,
       size_t n, const Eigen::GpuDevice& device) {}
   virtual void ImportToHbm(const std::vector<K>& keys,
-      const std::vector<V>& values, const Eigen::GpuDevice* device,
-      const EmbeddingConfig& emb_config) {};
+      const std::vector<V>& values, const EmbeddingConfig& emb_config) {};
   virtual GPUHashTable<K, V>* HashTable() {
     return nullptr;
   }

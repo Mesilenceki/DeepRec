@@ -378,16 +378,12 @@ class KvResourceImportV3Op: public AsyncOpKernel {
     se::cuda::ScopedActivateExecutorContext scoped_activation{
         context->op_device_context()->stream()->parent()};
     const Eigen::GpuDevice& device = context->eigen_gpu_device();
-    EVRestoreImpl(
-        ev, name_string, file_name_string, partition_id_, partition_num_, &reader,
-        "-partition_offset", "-keys", "-values", "-versions", "-freqs",
-        reset_version_, &device);
-#else
-    EVRestoreImpl(
-        ev, name_string, file_name_string, partition_id_, partition_num_, &reader,
-        "-partition_offset", "-keys", "-values", "-versions", "-freqs",
-        reset_version_, nullptr);
 #endif
+    EmbeddingVarContext<Device> ev_ctx(context);
+    EVRestoreImpl(
+        ev, name_string, file_name_string, partition_id_, partition_num_, &reader,
+        "-partition_offset", "-keys", "-values", "-versions", "-freqs",
+        reset_version_, ev_ctx);
     ev->SetInitialized();
     done();
   }

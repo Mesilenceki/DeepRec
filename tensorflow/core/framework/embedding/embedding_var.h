@@ -446,8 +446,7 @@ class EmbeddingVar : public ResourceBase {
                 int bucket_num,
                 int64 partition_id,
                 int64 partition_num,
-                bool is_filter,
-                const Eigen::GpuDevice* device) {
+                bool is_filter) {
     if (IsMultiLevel() && IsUseHbm()) {
       Status s = Status::OK();
 #if GOOGLE_CUDA
@@ -483,14 +482,14 @@ class EmbeddingVar : public ResourceBase {
           value_import.emplace_back(*(row_offset + j));
         }
       }
-      storage_->ImportToHbm(key_import, value_import, device, emb_config_);
+      storage_->ImportToHbm(key_import, value_import, emb_config_);
 #endif //GOOGLE_CUDA
-      return Status::OK();
     } else {
       return filter_->Import(restore_buff, key_num, bucket_num,
           partition_id, partition_num, is_filter);
     }
-  }
+    return Status::OK();
+  } 
 
   void ImportToHbm() {
     //Update Cache

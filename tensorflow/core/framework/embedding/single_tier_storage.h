@@ -468,11 +468,10 @@ class HbmStorage : public SingleTierStorage<K, V> {
 
   void ImportToHbm(
       const std::vector<K>& keys, const std::vector<V>& values,
-      const Eigen::GpuDevice* device,
       const EmbeddingConfig& emb_config) override {
     GPUHashMapKV<K, V>* gpu_kv =
         dynamic_cast<GPUHashMapKV<K, V>*>(SingleTierStorage<K, V>::kv_);
-    gpu_kv->Import(keys, values, device, emb_config);
+    gpu_kv->Import(keys, values, emb_config);
   }
 
   GPUHashTable<K, V>* HashTable() override {

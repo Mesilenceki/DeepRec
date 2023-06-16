@@ -590,18 +590,20 @@ Status DumpEmbeddingValues(EmbeddingVar<K, V>* ev,
 
 namespace {
 constexpr char kPartStr[] = "part_";
-const static string incr_part_offset_tensor_suffix = "-incr_partition_offset";
-const static string incr_key_suffix = "-sparse_incr_keys";
-const static string  incr_value_suffix = "-sparse_incr_values";
-const static string incr_version_suffix = "-sparse_incr_versions";
-const static string incr_freq_suffix = "-sparse_incr_freqs";
-const static string part_offset_filter_tensor_suffix = "-partition_filter_offset";
-size_t buffer_size = 8 << 20;
+constexpr int kPartStrLen = sizeof(kPartStr) / sizeof(kPartStr[0]);
+constexpr size_t buffer_size = 8 << 20;
+// const static string incr_part_offset_tensor_suffix = "-incr_partition_offset";
+// const static string incr_key_suffix = "-sparse_incr_keys";
+// const static string  incr_value_suffix = "-sparse_incr_values";
+// const static string incr_version_suffix = "-sparse_incr_versions";
+// const static string incr_freq_suffix = "-sparse_incr_freqs";
+// const static string part_offset_filter_tensor_suffix = "-partition_filter_offset";
+
 // "-partition_offset", "-keys", "-values", "-versions", "-freqs"
 }
 
 template<typename K, typename V>
-Status EVRestorePrepareShape(BundleReader* reader,
+Status EVRestoreTensorShape(BundleReader* reader,
     const std::string& tensor_key, const std::string& tensor_value,
     const std::string& tensor_version, const std::string& tensor_freq,
     TensorShape* key_shape, TensorShape* value_shape, 
@@ -623,8 +625,6 @@ Status EVRestorePrepareShape(BundleReader* reader,
       sizeof(V) * value_shape->dim_size(0) * value_shape->dim_size(1));
   st = reader->LookupHeader(tensor_version,
       sizeof(int64) * version_shape->dim_size(0));
-  if (!st.ok())
-    return st;
   if (has_freq) {
     st = reader->LookupTensorShape(tensor_freq, freq_shape);
     st = reader->LookupHeader(tensor_freq,
@@ -711,7 +711,7 @@ Status EVRestoreFilter(const std::string& tensor_key,
       read_key_num = key_filter_bytes_read / sizeof(K);
       VLOG(2) << "restore, read_key_num:" << read_key_num;
       s = ev->Import(restore_buff, read_key_num, kSavedPartitionNum,
-                     partition_id, partition_num, true, device);
+                     partition_id, partition_num, true);
       if (!s.ok()) return s;
       tot_key_filter_num -= read_key_num;
     }
@@ -785,9 +785,9 @@ Status EVRestoreData(const std::string& tensor_key,
     if (key_bytes_read > 0) {
       read_key_num = key_bytes_read / sizeof(K);
       VLOG(2) << "restore, read_key_num:" << read_key_num;
-      if (restore_customDim && old_dim != ev->ValueLen()) {
+      if (restore_customDim && old_dim != new_dim) {
         VLOG(2) << "restore, read_value_reshape dim: from " << old_dim << " to "
-                << ev->ValueLen();
+                << new_dim;
         if (read_key_num * value_unit_bytes != value_bytes_read) {
           return tensorflow::errors::FailedPrecondition(
               "Expected read_key_num * value_unit_bytes == "
@@ -800,7 +800,7 @@ Status EVRestoreData(const std::string& tensor_key,
         for (int i = 0; i < read_key_num; ++i) {
           memcpy(tmp_ptr.get() + i * value_unit_bytes_new,
                  restore_buff.value_buffer + i * value_unit_bytes, read_once);
-          if (old_dim >= ev->ValueLen()) continue;
+          if (old_dim >= new_dim) continue;
           auto p = ev->GetDefaultValue(idx);
           ++idx;
           memcpy(tmp_ptr.get() + i * value_unit_bytes_new + value_unit_bytes,
@@ -812,7 +812,7 @@ Status EVRestoreData(const std::string& tensor_key,
       }
 
       st = ev->Import(restore_buff, read_key_num, kSavedPartitionNum,
-                      partition_id, partition_num, false, device);
+                      partition_id, partition_num, false);
       if (!st.ok()) {
         LOG(FATAL) << "EV restoring fail:" << st.ToString();
       }
@@ -840,7 +840,7 @@ Status DynamicRestoreValue(EmbeddingVar<K, V>* ev, BundleReader* reader,
     string part_id = std::to_string(i);
     string pre_subname = name_string.substr(0, name_string.find("part_"));
     string post_subname = name_string.substr(
-        name_string.find("part_") + kPartStr.len() + curr_partid_str.size());
+        name_string.find("part_") + kPartStrLen + curr_partid_str.size());
     string tensor_name = pre_subname + kPartStr + part_id + post_subname;
 
     string tensor_key = tensor_name + "-keys";
@@ -849,7 +849,7 @@ Status DynamicRestoreValue(EmbeddingVar<K, V>* ev, BundleReader* reader,
     string tensor_freq = tensor_name + "-freqs";
 
     TensorShape key_shape, value_shape, version_shape, freq_shape;
-    EVRestorePrepareShape<K, V>(
+    EVRestoreTensorShape<K, V>(
         reader, tensor_key, tensor_value, tensor_version, tensor_freq,
         &key_shape, value_shape, version_shape, freq_shape, nullptr, nullptr,
         nullptr, nullptr, has_freq, has_filter);
@@ -884,7 +884,7 @@ Status EVRestoreNoPartiton(EmbeddingVar<K, V>* ev, BundleReader* reader,
   string tensor_version = name_string + version_suffix;
   string tensor_freq = name_string + freq_suffix;
 
-  Status st = EVRestorePrepareShape<K, V>(
+  Status st = EVRestoreTensorShape<K, V>(
       reader, tensor_key, tensor_value, tensor_version, tensor_freq, &key_shape,
       &value_shape, &version_shape, &freq_shape, &key_filter_shape,
       &version_filter_shape, &freq_filter_shape, has_freq, has_filter);
@@ -954,7 +954,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev, BundleReader* reader,
     string part_id = std::to_string(orig_partnum);
     string pre_subname = name_string.substr(0, name_string.find(kPartStr));
     string post_subname = name_string.substr(
-        name_string.find(kPartStr) + kPartStr.len() + curr_partid_str.size());
+        name_string.find(kPartStr) + kPartStrLen + curr_partid_str.size());
     string tensor_name = pre_subname + kPartStr + part_id + post_subname;
     string tensor_key = tensor_name + key_suffix;
     string tensor_value = tensor_name + value_suffix;
@@ -963,7 +963,7 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev, BundleReader* reader,
     TensorShape key_shape, value_shape, version_shape, freq_shape;
     TensorShape key_filter_shape, version_filter_shape, freq_filter_shape;
 
-    Status st = EVRestorePrepareShape<K, V>(
+    Status st = EVRestoreTensorShape<K, V>(
         reader, tensor_key, tensor_value, tensor_version, tensor_freq,
         &key_shape, &value_shape, &version_shape, &freq_shape,
         &key_filter_shape, &version_filter_shape, &freq_filter_shape,
@@ -1049,16 +1049,16 @@ Status EVRestoreWithPartition(EmbeddingVar<K, V>* ev, BundleReader* reader,
 }
 
 inline bool IsOldCheckpoint(const std::string& name_string,
-                            const std::string& curr_partid_str,
-                            BundleReader* reader,
+                            int partition_id, BundleReader* reader,
                             const std::string& part_offset_tensor_suffix) {
   // then check whether checkpoint is in old form
   bool is_oldform = false;
+  const string& curr_partid_str = std::to_string(partition_id);
 
   string part_id = std::to_string(0);
   string pre_subname = name_string.substr(0, name_string.find(kPartStr));
   string post_subname = name_string.substr(
-      name_string.find(kPartStr) + kPartStr.len() + curr_partid_str.size());
+      name_string.find(kPartStr) + kPartStrLen + curr_partid_str.size());
   string tensor_name = pre_subname + kPartStr + part_id + post_subname;
 
   TensorShape part_offset_shape;
@@ -1075,18 +1075,17 @@ inline bool IsOldCheckpoint(const std::string& name_string,
 template <typename K, typename V>
 Status EVRestoreOldFromCheckpoint(EmbeddingVar<K, V>* ev,
                                   const std::string& name_string,
-                                  const std::string& curr_partid_str,
                                   const std::string& key_suffix,
                                   int partition_id, BundleReader* reader,
-                                  int partition_num, const GPUDevice* device,
-                                  bool reset_version = false) {
+                                  int partition_num, bool reset_version = false) {
   // first get original partition number
   int orig_partnum = 0;
+  const string& curr_partid_str = std::to_string(partition_id);
   for (;; orig_partnum++) {
     string part_id = std::to_string(orig_partnum);
     string pre_subname = name_string.substr(0, name_string.find(kPartStr));
     string post_subname = name_string.substr(
-        name_string.find(kPartStr) + kPartStr.len() + curr_partid_str.size());
+        name_string.find(kPartStr) + kPartStrLen + curr_partid_str.size());
     string tensor_name = pre_subname + kPartStr + part_id + post_subname;
 
     string tensor_key = tensor_name + key_suffix;
@@ -1140,8 +1139,7 @@ Status EVRestoreImpl(EmbeddingVar<K, V>* ev, const std::string& name_string,
                      const std::string& key_suffix,
                      const std::string& value_suffix,
                      const std::string& version_suffix,
-                     const std::string& freq_suffix, bool reset_version = false,
-                     const Eigen::GpuDevice* device = nullptr) {
+                     const std::string& freq_suffix, bool reset_version = false) {
   Status s;
   std::string ssd_emb_file_name, ssd_record_file_name;
   if (HasSsdFile(name_string, file_name_string, ssd_record_file_name,
@@ -1152,19 +1150,18 @@ Status EVRestoreImpl(EmbeddingVar<K, V>* ev, const std::string& name_string,
   // first check whether there is partition
   if (name_string.find(kPartStr) == std::string::npos) {
     s = EVRestoreNoPartiton(ev, reader, name_string, key_suffix, value_suffix,
-                            version_suffix, freq_suffix, device, reset_version);
+                            version_suffix, freq_suffix, reset_version);
     if (!s.ok()) {
       LOG(FATAL) << "EV restoring fail:" << s.ToString();
     }
     return s;
   }
 
-  const string& curr_partid_str = std::to_string(partition_id);
-  auto is_oldform = IsOldCheckpoint(name_string, curr_partid_str, reader,
+  auto is_oldform = IsOldCheckpoint(name_string, partiton_id, reader,
                                     part_offset_tensor_suffix);
   if (is_oldform) {
-    s = EVRestoreOldFromCheckpoint(ev, name_string, curr_partid_str, key_suffix,
-                                   partition_id, reader, partition_num, device,
+    s = EVRestoreOldFromCheckpoint(ev, name_string, key_suffix,
+                                   partition_id, reader, partition_num,
                                    reset_version);
     if (!s.ok()) {
       LOG(FATAL) << "EV restoring fail:" << s.ToString();
