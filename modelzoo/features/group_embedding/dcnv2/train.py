@@ -61,10 +61,8 @@ from tensorflow.python.framework import ops
 os.environ["TF_GPU_THREAD_MODE"] = "global"
 os.environ["TF_GPU_THREAD_COUNT"] = "16"
 
-import horovod.tensorflow as hvd
-
-#Enable group_embedding_lookup
-tf.config.experimental.enable_distributed_strategy(strategy="collective")
+# import horovod.tensorflow as hvd
+from tensorflow.python.distribute.group_embedding_collective_strategy import CollectiveStrategy
 
 # Set to INFO for tracking training, default is WARN. ERROR for least messages
 tf.logging.set_verbosity(tf.logging.INFO)
@@ -461,154 +459,149 @@ def build_model_input(filename, batch_size, num_epochs):
 def main():
 
     # check dataset and count data set size
+    strategy = CollectiveStrategy()
+    with strategy.scope():
+        print("Checking dataset...")
 
-    print("Checking dataset...")
+        train_file = args.data_location + '/train.csv'
 
-    train_file = args.data_location + '/train.csv'
+        if (not os.path.exists(train_file)):
 
-    if (not os.path.exists(train_file)):
+            print("Dataset does not exist in the given data_location.")
 
-        print("Dataset does not exist in the given data_location.")
+            sys.exit()
 
-        sys.exit()
+        no_of_training_examples = sum(1 for line in open(train_file))
 
-    no_of_training_examples = sum(1 for line in open(train_file))
+        print("Numbers of training dataset is {}".format(no_of_training_examples))
 
-    print("Numbers of training dataset is {}".format(no_of_training_examples))
+        # set batch size, eporch & steps
 
-    # set batch size, eporch & steps
+        assert args.batch_size % hvd.size() == 0
 
-    assert args.batch_size % hvd.size() == 0
+        batch_size = int(args.batch_size / hvd.size())
 
-    batch_size = int(args.batch_size / hvd.size())
+        if args.steps == 0:
 
-    if args.steps == 0:
+            no_of_epochs = 1
 
-        no_of_epochs = 1
+            train_steps = math.ceil(
+                (float(no_of_epochs) * no_of_training_examples) / batch_size)
 
-        train_steps = math.ceil(
-            (float(no_of_epochs) * no_of_training_examples) / batch_size)
+        else:
 
-    else:
+            no_of_epochs = math.ceil(
+                (float(batch_size) * args.steps) / no_of_training_examples)
 
-        no_of_epochs = math.ceil(
-            (float(batch_size) * args.steps) / no_of_training_examples)
+            train_steps = args.steps
 
-        train_steps = args.steps
+        print("The training steps is {}".format(train_steps))
 
-    print("The training steps is {}".format(train_steps))
+        # set fixed random seed
 
-    # set fixed random seed
+        tf.set_random_seed(args.seed)
 
-    tf.set_random_seed(args.seed)
+        # create data pipline of train & test dataset
 
-    # create data pipline of train & test dataset
+        with tf.device('/cpu:0'):
 
-    with tf.device('/cpu:0'):
+            train_dataset = build_model_input(train_file, batch_size, no_of_epochs)
 
-        train_dataset = build_model_input(train_file, batch_size, no_of_epochs)
+            iterator = tf.data.Iterator.from_structure(train_dataset.output_types,
+                                                    train_dataset.output_shapes)
 
-        iterator = tf.data.Iterator.from_structure(train_dataset.output_types,
-                                                   train_dataset.output_shapes)
+            next_element = iterator.get_next()
 
-        next_element = iterator.get_next()
+        train_init_op = iterator.make_initializer(train_dataset)
 
-    train_init_op = iterator.make_initializer(train_dataset)
-
-    dense_feature, sparse_feature, labels = next_element[0], next_element[
-        1], next_element[2]
-    
-    input_features = None
-
-    if args.use_feature_columns:
-
-        feature_columns = transform_feature_column()
-
-        features = transform_features(sparse_feature, dense_feature)
-
-        input_features = tf.feature_column.input_layer(features, feature_columns)
-    else:
+        dense_feature, sparse_feature, labels = next_element[0], next_element[
+            1], next_element[2]
         
-        deep_features = transform_categorical(sparse_feature)
+        input_features = None
+        with strategy.embedding_scope(sharded=False, device="/cpu"):
+            if args.use_feature_columns:
 
-        wide_features = transform_numeric(dense_feature)
+                feature_columns = transform_feature_column()
 
-        input_features = deep_features + wide_features
+                features = transform_features(sparse_feature, dense_feature)
 
-    logits = stacked_dcn_v2(features=input_features,
-                            mlp_dims=[1024, 512, 256, 1])
+                input_features = tf.feature_column.input_layer(features, feature_columns)
+            else:
+                
+                deep_features = transform_categorical(sparse_feature)
 
-    labels = tf.reshape(labels, (-1, 1))
+                wide_features = transform_numeric(dense_feature)
 
-    loss = tf.reduce_mean(tf.keras.losses.binary_crossentropy(labels, logits))
+                input_features = deep_features + wide_features
 
-    loss = hvd.allreduce(loss, op=hvd.Sum)
+        logits = stacked_dcn_v2(features=input_features,
+                                mlp_dims=[1024, 512, 256, 1])
 
-    step = tf.train.get_or_create_global_step()
+        labels = tf.reshape(labels, (-1, 1))
 
-    opt = tf.train.AdagradOptimizer(learning_rate=0.01)
+        loss = tf.reduce_mean(tf.keras.losses.binary_crossentropy(labels, logits))
 
-    train_op = opt.minimize(loss, global_step=step)
+        loss = hvd.allreduce(loss, op=hvd.Sum)
 
-    # Session config
+        step = tf.train.get_or_create_global_step()
 
-    sess_config = tf.ConfigProto()
+        opt = tf.train.AdagradOptimizer(learning_rate=0.01)
 
-    sess_config.gpu_options.visible_device_list = str(hvd.local_rank())
+        train_op = opt.minimize(loss, global_step=step)
 
-    sess_config.gpu_options.allow_growth = True
+        # Session config is setted by Tensorflow internel
 
-    # # Session hooks
+        # # Session hooks
 
-    hooks = []
+        hooks = []
 
-    # if args.smartstaged and not args.tf:
+        # if args.smartstaged and not args.tf:
 
-    #     '''Smart staged Feature'''
+        #     '''Smart staged Feature'''
 
-    #     next_element = tf.staged(next_element, num_threads=4, capacity=40)
+        #     next_element = tf.staged(next_element, num_threads=4, capacity=40)
 
-    #     sess_config.graph_options.optimizer_options.do_smart_stage = True
+        #     sess_config.graph_options.optimizer_options.do_smart_stage = True
 
-    #     hooks.append(tf.make_prefetch_hook())
+        #     hooks.append(tf.make_prefetch_hook())
 
-    # if args.op_fusion and not args.tf:
+        # if args.op_fusion and not args.tf:
 
-    #     '''Auto Graph Fusion'''
+        #     '''Auto Graph Fusion'''
 
-    #     sess_config.graph_options.optimizer_options.do_op_fusion = True
+        #     sess_config.graph_options.optimizer_options.do_op_fusion = True
 
-    # if args.micro_batch and not args.tf:
+        # if args.micro_batch and not args.tf:
 
-    #     '''Auto Mirco Batch'''
+        #     '''Auto Mirco Batch'''
 
-    #     sess_config.graph_options.optimizer_options.micro_batch_num = args.micro_batch
-    scaffold = tf.train.Scaffold(local_init_op=tf.group(
-        tf.local_variables_initializer(), train_init_op))
+        #     sess_config.graph_options.optimizer_options.micro_batch_num = args.micro_batch
+        scaffold = tf.train.Scaffold(local_init_op=tf.group(
+            tf.local_variables_initializer(), train_init_op))
 
-    options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
-    run_metadata = tf.RunMetadata()
+        options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+        run_metadata = tf.RunMetadata()
 
-    stop_hook = tf.train.StopAtStepHook(last_step=train_steps)
+        stop_hook = tf.train.StopAtStepHook(last_step=train_steps)
 
-    hooks.append(stop_hook)
+        hooks.append(stop_hook)
 
-    log_hook = tf.train.LoggingTensorHook({
-        'steps': step,
-        'loss': loss,
-    }, every_n_iter=500)
-    hooks.append(log_hook)
+        log_hook = tf.train.LoggingTensorHook({
+            'steps': step,
+            'loss': loss,
+        }, every_n_iter=500)
+        hooks.append(log_hook)
 
-    with tf.train.MonitoredTrainingSession(master = '',
-                                           hooks=hooks,
-                                           checkpoint_dir=checkpoint_dir,
-                                           scaffold=scaffold,
-                                           config=sess_config) as sess:
+        with tf.train.MonitoredTrainingSession(master = '',
+                                            hooks=hooks,
+                                            checkpoint_dir=checkpoint_dir,
+                                            scaffold=scaffold,
+                                            config=sess_config) as sess:
 
-        while not sess.should_stop():
-            sess.run([loss, train_op])
-            
-    print("Training completed.")
+            while not sess.should_stop():
+                sess.run([loss, train_op])
+                
+        print("Training completed.")
 
 
 def boolean_string(string):
