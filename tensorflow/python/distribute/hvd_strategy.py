@@ -15,42 +15,74 @@
 # limitations under the License.
 # =============================================================================
 
-from tensorflow.python.framework import ops
-from tensorflow.python.platform import gfile
-from tensorflow.python.saved_model import builder
-from tensorflow.python.saved_model import constants
-from tensorflow.python.saved_model import utils_impl as saved_model_utils
-from tensorflow.python.training import training
-from tensorflow._api.v1 import train as train_v1
-from tensorflow.python.ops import embedding_ops
-from tensorflow.python.training import basic_session_run_hooks
-from tensorflow.python.training import monitored_session as _monitored_session
-from tensorflow.python.distribute import device_util
-from tensorflow.python.training import server_lib
-from tensorflow.core.protobuf import config_pb2
-from tensorflow.python.distribute import multi_worker_util
-from tensorflow.python.client import device_lib
-from tensorflow.python.framework import ops
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
 
-from tensorflow_estimator.python.estimator import estimator as _estimator_lib
-from tensorflow_estimator.python.estimator import \
-    run_config as run_config_lib
-from tensorflow.python.saved_model.model_utils.export_utils import \
-  EXPORT_TAG_MAP
-from tensorflow.python.saved_model.model_utils.export_utils import \
-  get_timestamped_export_dir
-from tensorflow.python.saved_model.model_utils.export_utils import \
-  SIGNATURE_KEY_MAP
-    
+import uuid
 import re
 import abc
 import os
 import contextlib
 import threading
 import random as rn
+import json
+import collections
 
 import numpy as np
 import horovod.tensorflow as hvd
+
+from tensorflow.core.protobuf import config_pb2
+from tensorflow.python.client import device_lib
+from tensorflow.python.distribute import device_util
+from tensorflow.python.distribute import multi_worker_util
+from tensorflow.python.framework import constant_op
+from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import ops
+from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import data_flow_ops
+from tensorflow.python.ops import embedding_ops
+from tensorflow.python.ops import gen_io_ops
+from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import string_ops
+from tensorflow.python.platform import tf_logging as logging
+from tensorflow.python.platform import gfile
+from tensorflow.python.training import basic_session_run_hooks
+from tensorflow.python.training import checkpoint_management
+from tensorflow.python.training import checkpoint_utils
+from tensorflow.python.training import monitored_session as _monitored_session
+from tensorflow.python.training import saver
+from tensorflow.python.training import server_lib
+from tensorflow.python.training import training
+from tensorflow.python.util import compat
+from tensorflow.python.util import nest
+from tensorflow.python.saved_model import builder
+from tensorflow.python.saved_model import constants
+from tensorflow.python.saved_model import utils_impl as saved_model_utils
+from tensorflow.python.saved_model.model_utils.export_utils import \
+  EXPORT_TAG_MAP
+from tensorflow.python.saved_model.model_utils.export_utils import \
+  get_timestamped_export_dir
+from tensorflow.python.saved_model.model_utils.export_utils import \
+  SIGNATURE_KEY_MAP
+
+from tensorflow._api.v1 import train as train_v1
+
+from tensorflow_estimator.python.estimator import estimator as _estimator_lib
+from tensorflow_estimator.python.estimator import \
+    run_config as run_config_lib
+
+try:
+  from tensorflow.python.training.saving.saveable_object_util import \
+    op_list_to_dict
+except ImportError:
+  op_list_to_dict = saver.BaseSaverBuilder.OpListToDict
+
+from hybridbackend.tensorflow.framework.ops import GraphKeys
+from hybridbackend.tensorflow.framework.ops import ModeKeys
+from hybridbackend.tensorflow.framework.rewriting import SessionRunRewriting
+from hybridbackend.tensorflow.framework.context import Context
+from hybridbackend.tensorflow.framework.ops import ModeKeys
 
 class HvdContext(object):
   DEFAULT_DEVICE = '/job:localhost'
@@ -312,7 +344,7 @@ class GraphRewriting(object):  # pylint: disable=useless-object-inheritance
       os.environ['PYTHONHASHSEED'] = str(seed)
       os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
 
-    with contextlib.nullcontext() as ctx:
+    with HvdContext.scope() as ctx:
       try:
         with cls._lock:
           cls._stack_depth += 1
@@ -396,9 +428,7 @@ class OptimizerRewriting(GraphRewriting):
       setattr(training, c, opt)
       setattr(train_v1, c, opt)
 
-
 GraphRewriting.register(OptimizerRewriting)
-
 
 ##################### MonitoredTrainingSession ##########################
 
@@ -434,10 +464,10 @@ def wraps_session_config(session_config, *args, **kwargs):
 def wraps_server(cls):
   r'''Decorator to create hybridbackend server class.
   '''
-  if issubclass(cls, HybridBackendServerBase):
+  if issubclass(cls, CollectiveServerBase):
     return cls
 
-  class HybridBackendServer(cls, HybridBackendServerBase):
+  class CollectiveServer(cls, CollectiveServerBase):
     r'''An in-process TensorFlow server, for use in distributed training.
     '''
     _default = None
@@ -477,7 +507,7 @@ def wraps_server(cls):
         return _monitored_session.MonitoredTrainingSession(
           master=self.target, **kwargs)
 
-  return HybridBackendServer
+  return CollectiveServer
 
 
 Server = wraps_server(server_lib.Server)
@@ -524,6 +554,7 @@ def wraps_monitored_training_session(fn):
 
     prev_monitored_session = _monitored_session.MonitoredSession
     _monitored_session.MonitoredSession = prev_monitored_session
+    ## 意义是什么
     # wraps_monitored_session(
     #   prev_monitored_session,
     #   keep_checkpoint_max=kwargs.pop('keep_checkpoint_max', 5),
@@ -566,70 +597,22 @@ class SessionRewriting(GraphRewriting):
 GraphRewriting.register(SessionRewriting)
 
 ##################### Saver ##############################
-# Copyright 2021 Alibaba Group Holding Limited. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# =============================================================================
 
-r'''Save and restore replicated and sharded variables.
-'''
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import uuid
-
-from tensorflow.python.framework import constant_op
-from tensorflow.python.framework import dtypes
-from tensorflow.python.framework import ops
-from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import data_flow_ops
-from tensorflow.python.ops import gen_io_ops
-from tensorflow.python.ops import math_ops
-from tensorflow.python.ops import string_ops
-from tensorflow.python.platform import tf_logging as logging
-from tensorflow.python.training import checkpoint_management
-from tensorflow.python.training import checkpoint_utils
-from tensorflow.python.training import saver
-from tensorflow.python.util import nest
-
-try:
-  from tensorflow.python.training.saving.saveable_object_util import \
-    op_list_to_dict
-except ImportError:
-  op_list_to_dict = saver.BaseSaverBuilder.OpListToDict
-
-from hybridbackend.tensorflow.framework.ops import GraphKeys
-from hybridbackend.tensorflow.framework.ops import ModeKeys
-from hybridbackend.tensorflow.framework.rewriting import SessionRunRewriting
-
-
-class HybridBackendSaverBuilderBase(object):  # pylint: disable=useless-object-inheritance
+class CollectiveSaverBuilderBase(object):  # pylint: disable=useless-object-inheritance
   r'''Base class of sharded saver builders.
   '''
 
 def wraps_saver_builder(cls):
   r'''Wraps a saver builder to support hybrid parallelism.
   '''
-  if issubclass(cls, HybridBackendSaverBuilderBase):
+  if issubclass(cls, CollectiveSaverBuilderBase):
     return cls
 
-  class HybridBackendSaverBuilder(cls, HybridBackendSaverBuilderBase):
+  class CollectiveSaverBuilder(cls, CollectiveSaverBuilderBase):
     r'''Wrapped SaverBuilder with support for hybrid parallelism.
     '''
     def __init__(self, *args, **kwargs):
-      name = kwargs.pop('name', 'hybrid_backend_saver_builder')
+      name = kwargs.pop('name', 'collective_saver_builder')
       self._restoreable_saveables = None
       self._rank = HvdContext.get().rank
       self._world_size = HvdContext.get().world_size
@@ -759,7 +742,7 @@ def wraps_saver_builder(cls):
       Returns:
         An Operation that restores the variables.
       '''
-      model_dir = Context.get().options.model_dir
+      model_dir = HvdContext.get().options.model_dir
       if model_dir is not None:
         latest_path = checkpoint_management.latest_checkpoint(model_dir)  # pylint: disable=protected-access
         if latest_path:
@@ -777,13 +760,13 @@ def wraps_saver_builder(cls):
         return saveable.initializer.outputs
       return super().restore_op(filename_tensor, saveable, preferred_shard)
 
-  return HybridBackendSaverBuilder
+  return CollectiveSaverBuilder
 
 
 SaverBuilder = wraps_saver_builder(saver.BulkSaverBuilder)
 
 
-class HybridBackendSaverBase(object):  # pylint: disable=useless-object-inheritance
+class CollectiveSaverBase(object):  # pylint: disable=useless-object-inheritance
   r'''Base class of sharded savers.
   '''
 
@@ -791,10 +774,10 @@ class HybridBackendSaverBase(object):  # pylint: disable=useless-object-inherita
 def wraps_saver(cls):
   r'''Wraps a saver to support hybrid parallelism.
   '''
-  if issubclass(cls, HybridBackendSaverBase):
+  if issubclass(cls, CollectiveSaverBase):
     return cls
 
-  class HybridBackendSaver(cls, HybridBackendSaverBase):
+  class CollectiveSaver(cls, CollectiveSaverBase):
     r'''SaverBuilder with support for hybrid parallelism.
     '''
     def __init__(self, *args, **kwargs):
@@ -826,7 +809,7 @@ def wraps_saver(cls):
         super()._build(*args, **kwargs)
         saver.BulkSaverBuilder = orig_saver_builder
       else:
-        if not isinstance(self._builder, HybridBackendSaverBuilderBase):
+        if not isinstance(self._builder, CollectiveSaverBuilderBase):
           raise ValueError(
             '`SaverBuilder` must decorated by `wraps_saver_builder`')
         super()._build(*args, **kwargs)
@@ -851,7 +834,7 @@ def wraps_saver(cls):
         return super().export_meta_graph(filename=filename, **kwargs)
       return None
 
-  return HybridBackendSaver
+  return CollectiveSaver
 
 
 Saver = wraps_saver(saver.Saver)
@@ -871,13 +854,13 @@ def replace_default_saver():
     raise ValueError(f'Multiple items found in collection SAVERS: {savers}')
 
   default_saver = savers[0]
-  if isinstance(default_saver, HybridBackendSaverBase):
+  if isinstance(default_saver, CollectiveSaverBase):
     return
 
   if not default_saver._sharded:  # pylint: disable=protected-access
     raise ValueError('Default saver must be sharded')
   if default_saver._builder is not None:  # pylint: disable=protected-access
-    if not isinstance(default_saver._builder, HybridBackendSaverBuilderBase):  # pylint: disable=protected-access
+    if not isinstance(default_saver._builder, CollectiveSaverBuilderBase):  # pylint: disable=protected-access
       raise ValueError(
         'builder for default saver must decorated by `wraps_saver_builder`')
   else:
@@ -974,12 +957,6 @@ class EstimatorRewriting(GraphRewriting):
 
 GraphRewriting.register(EstimatorRewriting)
 
-from tensorflow.python.training import monitored_session
-from tensorflow.python.util import compat
-
-from hybridbackend.tensorflow.framework.context import Context
-from hybridbackend.tensorflow.framework.ops import ModeKeys
-
 ##################### public interface ##########################
 
 @contextlib.contextmanager
@@ -994,13 +971,13 @@ def embedding_scope(**kwargs):
         yield ctx
 
 def export(export_dir_base,
-          checkpoint_path,
-          signature_def_fn,
-          assets_extra=None,
-          as_text=False,
-          clear_devices=True,
-          strip_default_attrs=True,
-          mode=ModeKeys.PREDICT):
+           checkpoint_path,
+           signature_def_fn,
+           assets_extra=None,
+           as_text=False,
+           clear_devices=True,
+           strip_default_attrs=True,
+           mode=ModeKeys.PREDICT):
 
   def export_all(
     export_dir_base,
@@ -1049,7 +1026,7 @@ def export(export_dir_base,
             main_op = signature_def_map[1]
           signature_def_map = signature_def_map[0]
         if not main_op:
-          main_op = monitored_session.Scaffold.default_local_init_op()
+          main_op = _monitored_session.Scaffold.default_local_init_op()
         if modes is None:
           modes = [ModeKeys.PREDICT, ModeKeys.TRAIN, ModeKeys.EVAL]
         modes = [
