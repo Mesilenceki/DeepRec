@@ -86,8 +86,6 @@ try:
 except ImportError:
   op_list_to_dict = saver.BaseSaverBuilder.OpListToDict
 
-from hybridbackend.tensorflow.framework.ops import GraphKeys
-
 ##################### HVDSTRATEGY COMMON CODE ##########################
 
 class HvdContext(object):
@@ -171,6 +169,18 @@ class HvdContext(object):
     r'''True if current server has GPU.
     '''
     return self._num_gpus > 0
+  
+  @property
+  def world_size(self):
+    r'''Number of devices.
+    '''
+    return self._world_size
+
+  @property
+  def rank(self):
+    r'''Global index of default local device.
+    '''
+    return self._rank
 
   @property
   def num_gpus(self):
@@ -305,6 +315,8 @@ class HvdContext(object):
     r'''Construct a server specification.
     '''
     self._task_type = 'localhost'
+    self._rank = hvd.local_rank()
+    self._world_size = hvd.size()
     self._task_id = 0
     self._cluster_spec = None
     self._is_chief = True
@@ -961,7 +973,6 @@ def wraps_saver(cls):
 
 
 Saver = wraps_saver(saver.Saver)
-
 
 def replace_default_saver():
   rank = HvdContext.get().rank
