@@ -28,11 +28,14 @@ import threading
 import random as rn
 import json
 import collections
-
+import time
+import six
 import numpy as np
 import horovod.tensorflow as hvd
 
+from tensorflow.python.distribute import estimator_training
 from tensorflow.core.protobuf import config_pb2
+from tensorflow.python.eager import context as _context
 from tensorflow.python.client import device_lib
 from tensorflow.python.distribute import device_util
 from tensorflow.python.distribute import multi_worker_util
@@ -71,6 +74,11 @@ from tensorflow._api.v1 import train as train_v1
 from tensorflow_estimator.python.estimator import estimator as _estimator_lib
 from tensorflow_estimator.python.estimator import \
     run_config as run_config_lib
+from tensorflow_estimator.python.estimator.training import _is_google_env
+from tensorflow_estimator.python.estimator.training import _TrainingExecutor
+from tensorflow.python.estimator.model_fn import ModeKeys
+from tensorflow_estimator.python.estimator.training import _MAX_DELAY_SECS
+from tensorflow_estimator.python.estimator.export import export_lib
 
 try:
   from tensorflow.python.training.saving.saveable_object_util import \
@@ -79,10 +87,8 @@ except ImportError:
   op_list_to_dict = saver.BaseSaverBuilder.OpListToDict
 
 from hybridbackend.tensorflow.framework.ops import GraphKeys
-from hybridbackend.tensorflow.framework.ops import ModeKeys
-from hybridbackend.tensorflow.framework.rewriting import SessionRunRewriting
-from hybridbackend.tensorflow.framework.context import Context
-from hybridbackend.tensorflow.framework.ops import ModeKeys
+
+##################### HVDSTRATEGY COMMON CODE ##########################
 
 class HvdContext(object):
   DEFAULT_DEVICE = '/job:localhost'
@@ -105,10 +111,10 @@ class HvdContext(object):
     prev_kwargs = {}
     try:
       c = cls.get()
-      prev_kwargs = c.options.update(**kwargs)
+      # prev_kwargs = c.options.update(**kwargs)
       yield c
     finally:
-      c.options.update(**prev_kwargs)
+      # c.options.update(**prev_kwargs)
       del prev_kwargs
 
   @classmethod
@@ -370,6 +376,133 @@ class GraphRewriting(object):  # pylint: disable=useless-object-inheritance
     r'''Revert API rewriting.
     ''' 
 
+##################### public interface ##########################
+
+@contextlib.contextmanager
+def scope(**kwargs):
+    with GraphRewriting.scope(**kwargs) as ctx:
+        yield ctx
+
+
+@contextlib.contextmanager
+def embedding_scope(**kwargs):
+    with GraphRewriting.scope(sharded=True, **kwargs) as ctx:
+        yield ctx
+
+def export(export_dir_base,
+           checkpoint_path,
+           signature_def_fn,
+           assets_extra=None,
+           as_text=False,
+           clear_devices=True,
+           strip_default_attrs=True,
+           mode=ModeKeys.PREDICT):
+
+  def export_all(
+    export_dir_base,
+    checkpoint_path,
+    signature_defs_and_main_op_fn,
+    assets_extra=None,
+    as_text=False,
+    clear_devices=True,
+    strip_default_attrs=True,
+    modes=None,
+    **kwargs):
+    r'''Build a SavedModel from variables in checkpoint.
+
+    Args:
+      export_dir_base: A string containing a directory to write the exported
+          graph and checkpoints.
+      checkpoint_path: A path to a checkpoint.
+      signature_defs_and_main_op_fn: Function returns signature defs and main_op.
+      assets_extra: A dict specifying how to populate the assets.extra directory
+          within the exported SavedModel.  Each key should give the destination
+          path (including the filename) relative to the assets.extra directory.
+          The corresponding value gives the full path of the source file to be
+          copied.  For example, the simple case of copying a single file without
+          renaming it is specified as
+          `{'my_asset_file.txt': '/path/to/my_asset_file.txt'}`.
+      as_text: Whether or not to write the SavedModel proto in text format.
+      clear_devices: Whether or not to clear the device field.
+      strip_default_attrs: Whether or not to remove default-valued attributes
+          from the NodeDefs.
+      modes: List contains PREDICT, TRAIN or TEST.
+
+    Returns:
+      Export directory if it's chief.
+    '''
+    if hvd.rank() != 0:
+      return None
+
+    export_dir = get_timestamped_export_dir(export_dir_base)
+    with ops.Graph().as_default():
+      with HvdContext.scope(mode=ModeKeys.PREDICT):
+        # Build graph.
+        signature_def_map = signature_defs_and_main_op_fn()
+        main_op = None
+        if isinstance(signature_def_map, (tuple, list)):
+          if len(signature_def_map) > 1:
+            main_op = signature_def_map[1]
+          signature_def_map = signature_def_map[0]
+        if not main_op:
+          main_op = _monitored_session.Scaffold.default_local_init_op()
+        if modes is None:
+          modes = [ModeKeys.PREDICT, ModeKeys.TRAIN, ModeKeys.EVAL]
+        modes = [
+          m for m in modes
+          if SIGNATURE_KEY_MAP[m] in signature_def_map]
+        signature_def_map = {
+          k: signature_def_map[k] for k in signature_def_map
+          if k in [SIGNATURE_KEY_MAP[m] for m in modes]}
+        signature_tags = [EXPORT_TAG_MAP[m][0] for m in modes]
+
+        b = builder.SavedModelBuilder(export_dir, **kwargs)
+        b._has_saved_variables = True  # pylint: disable=protected-access
+
+        # Copy variables.
+        saved_model_utils.get_or_create_variables_dir(export_dir)
+        export_checkpoint_path = saved_model_utils.get_variables_path(export_dir)
+        checkpoint_files = [
+          *gfile.Glob(f'{checkpoint_path}.index'),
+          *gfile.Glob(f'{checkpoint_path}.data-?????-of-?????')]
+        for f in checkpoint_files:
+          export_ckpt = re.sub(
+            compat.as_text(checkpoint_path),
+            compat.as_text(export_checkpoint_path),
+            f)
+          gfile.Copy(f, export_ckpt)
+
+        # Add MetaGraph.
+        b.add_meta_graph(
+          tags=signature_tags,
+          signature_def_map=signature_def_map,
+          assets_collection=ops.get_collection(ops.GraphKeys.ASSET_FILEPATHS),
+          clear_devices=clear_devices,
+          main_op=main_op,
+          strip_default_attrs=strip_default_attrs)
+
+        # Save model.
+        b.save(as_text=as_text)
+
+        # Save extras.
+        if assets_extra:
+          assets_extra_path = os.path.join(
+            export_dir, constants.EXTRA_ASSETS_DIRECTORY)
+          for dst, src in assets_extra.items():
+            target = os.path.join(assets_extra_path, compat.as_bytes(dst))
+            gfile.MakeDirs(os.path.dirname(target))
+            gfile.Copy(src, target)
+
+  return export_all(export_dir_base,
+                    checkpoint_path,
+                    lambda: {SIGNATURE_KEY_MAP[mode]: signature_def_fn()},
+                    assets_extra=assets_extra,
+                    as_text=as_text,
+                    clear_devices=clear_devices,
+                    strip_default_attrs=strip_default_attrs,
+                    modes=[mode]) 
+
+
 ##################### Optimizer ##########################
 
 def wraps_optimizer(
@@ -461,9 +594,11 @@ def wraps_session_config(session_config, *args, **kwargs):
       session_config.device_filters.append(f'/job:{task_type}/task:{task_id}')
   return session_config
 
-def wraps_server(cls):
-  r'''Decorator to create hybridbackend server class.
+class CollectiveServerBase(object):  # pylint: disable=useless-object-inheritance
+  r'''Base class of server wrapper.
   '''
+
+def wraps_server(cls):
   if issubclass(cls, CollectiveServerBase):
     return cls
 
@@ -509,9 +644,7 @@ def wraps_server(cls):
 
   return CollectiveServer
 
-
 Server = wraps_server(server_lib.Server)
-
 
 def wraps_monitored_training_session(fn):
   r'''Decorator to create wrapped monitored training session.
@@ -553,13 +686,6 @@ def wraps_monitored_training_session(fn):
       kwargs['master'] = master
 
     prev_monitored_session = _monitored_session.MonitoredSession
-    _monitored_session.MonitoredSession = prev_monitored_session
-    ## 意义是什么
-    # wraps_monitored_session(
-    #   prev_monitored_session,
-    #   keep_checkpoint_max=kwargs.pop('keep_checkpoint_max', 5),
-    #   keep_checkpoint_every_n_hours=kwargs.pop(
-    #     'keep_checkpoint_every_n_hours', 10000.0))
     sess = fn(*args, **kwargs)
     _monitored_session.MonitoredSession = prev_monitored_session
     return sess
@@ -653,9 +779,7 @@ def wraps_saver_builder(cls):
       sharded_saveables = []
       if self._rank != 0:
         sharded_saveables += ops.get_collection_ref(
-          GraphKeys.SHARDED_VARIABLES)
-        sharded_saveables += ops.get_collection_ref(
-          GraphKeys.SHARDED_RESOURCES)
+          ops.EMBEDDING_VARIABLES)
         sharded_saveables = [v for v in sharded_saveables if v is not None]
         sharded_saveables = op_list_to_dict(sharded_saveables).values()
         sharded_saveables = nest.flatten(sharded_saveables)
@@ -770,7 +894,6 @@ class CollectiveSaverBase(object):  # pylint: disable=useless-object-inheritance
   r'''Base class of sharded savers.
   '''
 
-
 def wraps_saver(cls):
   r'''Wraps a saver to support hybrid parallelism.
   '''
@@ -841,8 +964,6 @@ Saver = wraps_saver(saver.Saver)
 
 
 def replace_default_saver():
-  r'''Try to replace default saver to HybridBackendSaver.
-  '''
   rank = HvdContext.get().rank
   savers = ops.get_collection_ref(ops.GraphKeys.SAVERS)
 
@@ -889,7 +1010,7 @@ def replace_default_saver():
     return wrapped_save
   default_saver.save = _wraps_save(default_saver.save)
 
-class DefaultSaverRewriting(SessionRunRewriting):
+class DefaultSaverRewriting(GraphRewriting):
   r'''A SessionRunHook replaces default saver.
   '''
   def begin(self):
@@ -897,8 +1018,7 @@ class DefaultSaverRewriting(SessionRunRewriting):
     '''
     replace_default_saver()
 
-
-SessionRunRewriting.register(DefaultSaverRewriting)
+GraphRewriting.register(DefaultSaverRewriting)
 
 ##################### Estimator ##########################
 
@@ -930,6 +1050,431 @@ class RunConfig(run_config_lib.RunConfig):
     if self.evaluation_master == '':  # pylint: disable=protected-access
       self._evaluation_master = self.master  # pylint: disable=protected-access
 
+def wraps_model_fn(model_fn, model_dir, config):
+  r'''Decorator to set params in a model function.
+  '''
+  def wrapped_model_fn(features, labels, mode, params):
+    r'''Wrapped model function.
+    '''
+    with scope(mode=mode, model_dir=model_dir):
+      estimator_spec = model_fn(features, labels, mode, params)
+      if estimator_spec.scaffold.saver:
+        if not isinstance(
+            estimator_spec.scaffold.saver._builder,  # pylint: disable=protected-access
+            HorovodSaverBuilderBase):
+          raise ValueError(
+            'scaffold.saver in EstimatorSpec must be hb.train.Saver, '
+            'you can try call hb.train.replace_default_saver() before '
+            'creation of the scaffold.')
+      else:
+        estimator_spec.scaffold._saver = Saver(  # pylint: disable=protected-access
+          max_to_keep=config.keep_checkpoint_max,
+          keep_checkpoint_every_n_hours=config.keep_checkpoint_every_n_hours,
+          defer_build=True,
+          save_relative_paths=True)
+      training_hooks = list(estimator_spec.training_hooks) or []
+      training_chief_hooks = list(estimator_spec.training_chief_hooks) or []
+      estimator_spec = estimator_spec._replace(  # pylint: disable=protected-access
+        training_hooks=training_hooks,
+        training_chief_hooks=training_chief_hooks)
+      return estimator_spec
+  return wrapped_model_fn
+
+def start_std_server(config):
+  r'''Creates, starts, and returns a server_lib.Server.
+  '''
+  logging.info('Start Tensorflow server.')
+  return Server(config.cluster_spec,
+                job_name=config.task_type,
+                task_index=config.task_id,
+                config=wraps_session_config(config.session_config),
+                start=True,
+                protocol=config.protocol)
+
+EvaluationSpec = collections.namedtuple(
+  'EvaluationSpec', ['name', 'hooks', 'update_op', 'eval_dict'])
+
+class TrainingExecutor(_TrainingExecutor):
+  r'''The executor to run `Estimator` training and evaluation.
+  '''
+  def _start_std_server(self, config):
+    r'''Creates, starts, and returns a server_lib.Server.'''
+    start_std_server(config)
+
+class HorovodEstimatorBase(object):  # pylint: disable=useless-object-inheritance
+  r'''Base class of estimator wrapper.
+  '''
+
+def wraps_estimator(cls):
+  r'''Estimator decorator to train and evaluate in parallel.
+  '''
+  if issubclass(cls, HorovodEstimatorBase):
+    return cls
+
+  class HorovodEstimator(cls, HorovodEstimatorBase):
+    r'''Class to train and evaluate TensorFlow models.
+    '''
+    def __init__(self, model_fn, **kwargs):
+      r'''Constructs a wrapped `Estimator` instance.
+
+      Args:
+        model_fn: Model function. See
+          `tensorflow_estimator/python/estimator/estimator.py#L145`
+          for more information.
+        kwargs: Estimator arguments.
+      '''
+      kwargs['config'] = RunConfig.build(prototype=kwargs.pop('config', None))
+      model_dir = kwargs.get('model_dir', None)
+      self._train_drop_remainder = kwargs.pop('train_drop_remainder', True)
+      self._eval_drop_remainder = kwargs.pop('eval_drop_remainder', True)
+      self._predict_drop_remainder = kwargs.pop('predict_drop_remainder', True)
+
+      super().__init__(
+        wraps_model_fn(model_fn, model_dir, kwargs['config']),
+        **kwargs)
+
+    def _assert_members_are_not_overridden(self):
+      r'''disable the overridden check here.
+      '''
+
+    def train(
+        self, input_fn, hooks=None, max_steps=None, saving_listeners=None):
+      r'''support sync_dataset in training.
+      '''
+      if saving_listeners is None:
+        saving_listeners = []
+      with scope(
+          mode=ModeKeys.TRAIN,
+          model_dir=self._model_dir,
+          data_sync_drop_remainder=self._train_drop_remainder):
+        return super().train(
+          input_fn, hooks=hooks, max_steps=max_steps,
+          saving_listeners=saving_listeners)
+
+    def evaluate(self,
+                 input_fn,
+                 steps=None,
+                 hooks=None,
+                 checkpoint_path=None,
+                 name=None):
+      r'''support standalone evaluation.
+      '''
+      _estimator_lib._estimator_api_gauge.get_cell('evaluate').set(True)  # pylint: disable=protected-access
+      if self.config.cluster_spec:
+        if estimator_training.should_run_distribute_coordinator(self.config):
+          raise ValueError(
+            'Running `evaluate` with Distribute Coordinator '
+            'not supported.')
+        if not _is_google_env():
+          start_std_server(self.config)
+
+        start_delay_secs = 0
+        if self.config.task_type == run_config_lib.TaskType.WORKER:
+          max_delay_secs = _MAX_DELAY_SECS
+          if self.config.experimental_max_worker_delay_secs is not None:
+            max_delay_secs = int(self.config.experimental_max_worker_delay_secs)
+          start_delay_secs = min(
+            max_delay_secs,
+            (self.config.task_id + 1) * _DELAY_SECS_PER_WORKER)
+
+        if start_delay_secs > 0:
+          logging.info(
+            f'Waiting {start_delay_secs} secs before starting evaluation.')
+          time.sleep(start_delay_secs)
+
+      return self._actual_eval(
+        input_fn,
+        strategy=self._eval_distribution,
+        steps=steps,
+        hooks=hooks,
+        checkpoint_path=checkpoint_path,
+        name=name)
+
+    def _actual_eval(
+        self, input_fn, strategy=None, steps=None, hooks=None,
+        checkpoint_path=None, name=None):
+      if strategy:
+        raise ValueError('DistributionStrategy not supported')
+
+      with _context.graph_mode(), HvdContext.scope(
+          mode=ModeKeys.EVAL,
+          model_dir=self._model_dir):
+        hooks = _estimator_lib._check_hooks_type(hooks)  # pylint: disable=protected-access
+        hooks.extend(self._convert_eval_steps_to_hooks(steps))  # pylint: disable=protected-access
+        if not checkpoint_path:
+          latest_path = checkpoint_management.latest_checkpoint(self._model_dir)  # pylint: disable=protected-access
+          if not latest_path:
+            raise ValueError(
+              f'Could not find trained model in model_dir: {self._model_dir}.')  # pylint: disable=protected-access
+          checkpoint_path = latest_path
+
+        with ops.Graph().as_default() as g, g.device(self._device_fn):  # pylint: disable=protected-access
+          with ops.name_scope(ModeKeys.EVAL), reuse_variables(vs.AUTO_REUSE):
+            (scaffold, update_op, eval_dict, all_hooks) = (
+              self._evaluate_build_graph(  # pylint: disable=protected-access
+                input_fn,
+                hooks, checkpoint_path))
+            return self._evaluate_run(  # pylint: disable=protected-access
+              checkpoint_path=checkpoint_path,
+              scaffold=scaffold,
+              update_op=update_op,
+              eval_dict=eval_dict,
+              all_hooks=all_hooks,
+              output_dir=self.eval_dir(name))
+
+    def train_and_evaluate(
+        self, train_spec, eval_spec,
+        eval_every_n_iter=None,
+        eval_history=None):
+      r'''Train and evaluate the `estimator`.
+
+      Args:
+        eval_every_n_iter: `int`, runs parallel evaluation once every
+          N training iteration. If None, disable the evaluation.
+        eval_history: History of eval metrics. eval_history should support
+          `append` method.
+      '''
+      train_hooks = []
+      if eval_every_n_iter is not None:
+        def _eval_fn():
+          with scope(
+              model_dir=self._model_dir,
+              data_sync_drop_remainder=self._eval_drop_remainder):
+            (_, evaluation_hooks, input_hooks, update_op, eval_dict) = (
+              self._call_model_fn_eval(  # pylint: disable=protected-access
+                eval_spec.input_fn, self.config))
+            hooks = list(evaluation_hooks) or []
+            hooks.extend(list(input_hooks) or [])
+            return EvaluationSpec(
+              name=EvaluationSpec.__name__,
+              hooks=hooks,
+              update_op=update_op,
+              eval_dict=eval_dict)
+        eval_hook = EvaluationHook(
+          _eval_fn,
+          steps=eval_spec.steps,
+          every_n_iter=eval_every_n_iter,
+          summary_dir=self.eval_dir(),
+          history=eval_history)
+        train_hooks.append(eval_hook)
+
+      if self.config.cluster_spec:
+        if estimator_training.should_run_distribute_coordinator(self.config):
+          raise ValueError(
+            'Running `train_and_evaluate` with Distribute Coordinator '
+            'not supported.')
+
+        executor = TrainingExecutor(
+          estimator=self,
+          train_spec=train_spec,
+          eval_spec=eval_spec,
+          train_hooks=train_hooks)
+        return executor.run()
+
+      return self.train(
+        train_spec.input_fn,
+        hooks=tuple(train_spec.hooks) + tuple(train_hooks),
+        max_steps=train_spec.max_steps)
+
+    def export_saved_model(
+        self, export_dir_base, serving_input_receiver_fn,
+        assets_extra=None,
+        as_text=False,
+        checkpoint_path=None,
+        experimental_mode=ModeKeys.PREDICT,
+        **kwargs):
+      r'''Exports inference graph as a `SavedModel` into the given dir.
+      '''
+      if not serving_input_receiver_fn:
+        raise ValueError('An input_receiver_fn must be defined.')
+
+      input_receiver_fn_map = {experimental_mode: serving_input_receiver_fn}
+
+      return self._export_all_saved_models(
+        export_dir_base,
+        input_receiver_fn_map,
+        assets_extra=assets_extra,
+        as_text=as_text,
+        checkpoint_path=checkpoint_path,
+        strip_default_attrs=True,
+        **kwargs)
+
+    def experimental_export_all_saved_models(
+        self, export_dir_base, input_receiver_fn_map,
+        assets_extra=None,
+        as_text=False,
+        checkpoint_path=None,
+        **kwargs):
+      r'''Exports a `SavedModel` with `tf.MetaGraphDefs` for each requested
+        mode.
+      '''
+      return self._export_all_saved_models(
+        export_dir_base, input_receiver_fn_map,
+        assets_extra=assets_extra,
+        as_text=as_text,
+        checkpoint_path=checkpoint_path,
+        strip_default_attrs=True,
+        **kwargs)
+
+    def _export_all_saved_models(
+        self,
+        export_dir_base,
+        input_receiver_fn_map,
+        assets_extra=None,
+        as_text=False,
+        checkpoint_path=None,
+        strip_default_attrs=True,
+        **kwargs):
+      r'''Exports multiple modes in the model function to a SavedModel.
+      '''
+      if (input_receiver_fn_map.get(ModeKeys.TRAIN)
+          or input_receiver_fn_map.get(ModeKeys.EVAL)
+          or not input_receiver_fn_map.get(ModeKeys.PREDICT)):
+        raise ValueError('Only PREDICT mode is supported.')
+      mode = ModeKeys.PREDICT
+
+      if HvdContext.get().rank != 0:
+        return None
+
+      if not checkpoint_path:
+        checkpoint_path = checkpoint_management.latest_checkpoint(
+          self._model_dir)
+      if not checkpoint_path:
+        if self._warm_start_settings:
+          checkpoint_path = self._warm_start_settings.ckpt_to_initialize_from
+          if gfile.IsDirectory(checkpoint_path):
+            checkpoint_path = checkpoint_management.latest_checkpoint(
+              checkpoint_path)
+        else:
+          raise ValueError(
+            f'Couldn\'t find trained model at {self._model_dir}.')
+
+      def _fn():
+        random_seed.set_random_seed(self._config.tf_random_seed)
+
+        input_receiver_fn = input_receiver_fn_map[mode]
+        input_receiver = input_receiver_fn()
+        estimator_spec = self._call_model_fn(
+          features=input_receiver.features,
+          labels=getattr(input_receiver, 'labels', None),
+          mode=mode,
+          config=self.config)
+        export_outputs = export_lib.export_outputs_for_mode(
+          mode=estimator_spec.mode,
+          serving_export_outputs=estimator_spec.export_outputs,
+          predictions=estimator_spec.predictions,
+          loss=estimator_spec.loss,
+          metrics=estimator_spec.eval_metric_ops)
+        signature_def_map = export_lib.build_all_signature_defs(
+          input_receiver.receiver_tensors,
+          export_outputs,
+          getattr(input_receiver, 'receiver_tensors_alternatives', None),
+          serving_only=(mode == ModeKeys.PREDICT))
+        main_op = None
+        if estimator_spec.scaffold.local_init_op is not None:
+          main_op = estimator_spec.scaffold.local_init_op
+        return signature_def_map, main_op
+
+      return export_all(
+        export_dir_base,
+        checkpoint_path,
+        _fn,
+        assets_extra=assets_extra,
+        as_text=as_text,
+        clear_devices=True,
+        strip_default_attrs=strip_default_attrs,
+        modes=[mode],
+        **kwargs)
+
+    def _actual_predict(
+        self, input_fn,
+        predict_keys=None,
+        hooks=None,
+        checkpoint_path=None,
+        yield_single_examples=True):
+      r'''Predict method of estimator in HB.
+      '''
+      with _context.graph_mode(), HvdContext.scope(
+          mode=ModeKeys.PREDICT,
+          model_dir=self._model_dir,
+          comm_pool_capacity=1,
+          comm_pool_name=ModeKeys.PREDICT):
+        hooks = _estimator_lib._check_hooks_type(hooks)  # pylint: disable=protected-access
+        # Check that model has been trained.
+        if not checkpoint_path:
+          checkpoint_path = checkpoint_management.latest_checkpoint(
+            self._model_dir)
+        if not checkpoint_path:
+          logging.info(
+            f'Could not find trained model in model_dir: {self._model_dir},'
+            f'running initialization to predict.')
+        with ops.Graph().as_default() as g, g.device(self._device_fn):
+          with ops.name_scope(ModeKeys.PREDICT):
+            random_seed.set_random_seed(self._config.tf_random_seed)
+            self._create_and_assert_global_step(g)
+            features, input_hooks = self._get_features_from_input_fn(
+              input_fn, ModeKeys.PREDICT)
+            estimator_spec = self._call_model_fn(
+              features, None, ModeKeys.PREDICT, self.config)
+
+          # Call to warm_start has to be after model_fn is called.
+          self._maybe_warm_start(checkpoint_path)
+
+          predictions = self._extract_keys(estimator_spec.predictions,
+                                           predict_keys)
+          all_hooks = list(input_hooks)
+          all_hooks.extend(hooks)
+          all_hooks.extend(list(estimator_spec.prediction_hooks or []))
+          with _monitored_session.MonitoredSession(
+              session_creator=_monitored_session.ChiefSessionCreator(
+                checkpoint_filename_with_path=checkpoint_path,
+                master=self._config.master,
+                scaffold=estimator_spec.scaffold,
+                config=self._session_config),
+              hooks=all_hooks) as mon_sess:
+            while not mon_sess.should_stop():
+              preds_evaluated = mon_sess.run(predictions)
+              if not yield_single_examples:
+                yield preds_evaluated
+              elif not isinstance(predictions, dict):
+                for pred in preds_evaluated:
+                  yield pred
+              else:
+                for i in range(self._extract_batch_length(preds_evaluated)):
+                  yield {
+                    key: value[i]
+                    for key, value in six.iteritems(preds_evaluated)
+                  }
+
+    def predict(
+        self, input_fn,
+        predict_keys=None,
+        hooks=None,
+        checkpoint_path=None,
+        yield_single_examples=True):
+      r'''Predict method of estimator in HB.
+      '''
+      _estimator_lib._estimator_api_gauge.get_cell('predict').set(True)  # pylint: disable=protected-access
+      if self.config.cluster_spec:
+        if estimator_training.should_run_distribute_coordinator(self.config):
+          raise ValueError(
+            'Running `evaluate` with Distribute Coordinator '
+            'not supported.')
+        if not _is_google_env():
+          start_std_server(self.config)
+
+      return self._actual_predict(
+        input_fn,
+        predict_keys=predict_keys,
+        hooks=hooks,
+        checkpoint_path=checkpoint_path,
+        yield_single_examples=yield_single_examples)
+
+  return HorovodEstimator
+
+
+Estimator = wraps_estimator(_estimator_lib.Estimator)
+
 class EstimatorRewriting(GraphRewriting):
   r'''Rewriting estimator
   '''
@@ -940,145 +1485,9 @@ class EstimatorRewriting(GraphRewriting):
   def begin(self):
     self._prev_estimator = _estimator_lib.Estimator
 
-    class HorovodEstimator(cls):
-      def __init__(self, model_fn):
-        pass
-      
-      def train(self):
-        pass
-      
-      def evaluate(self):
-        pass
-    
-    _estimator_lib.Estimator = HorovodEstimator
+    _estimator_lib.Estimator = Estimator
   
   def end(self):
     _estimator_lib.Estimator = self._prev_estimator
 
 GraphRewriting.register(EstimatorRewriting)
-
-##################### public interface ##########################
-
-@contextlib.contextmanager
-def scope(**kwargs):
-    with GraphRewriting.scope(**kwargs) as ctx:
-        yield ctx
-
-
-@contextlib.contextmanager
-def embedding_scope(**kwargs):
-    with GraphRewriting.scope(sharded=True, **kwargs) as ctx:
-        yield ctx
-
-def export(export_dir_base,
-           checkpoint_path,
-           signature_def_fn,
-           assets_extra=None,
-           as_text=False,
-           clear_devices=True,
-           strip_default_attrs=True,
-           mode=ModeKeys.PREDICT):
-
-  def export_all(
-    export_dir_base,
-    checkpoint_path,
-    signature_defs_and_main_op_fn,
-    assets_extra=None,
-    as_text=False,
-    clear_devices=True,
-    strip_default_attrs=True,
-    modes=None,
-    **kwargs):
-    r'''Build a SavedModel from variables in checkpoint.
-
-    Args:
-      export_dir_base: A string containing a directory to write the exported
-          graph and checkpoints.
-      checkpoint_path: A path to a checkpoint.
-      signature_defs_and_main_op_fn: Function returns signature defs and main_op.
-      assets_extra: A dict specifying how to populate the assets.extra directory
-          within the exported SavedModel.  Each key should give the destination
-          path (including the filename) relative to the assets.extra directory.
-          The corresponding value gives the full path of the source file to be
-          copied.  For example, the simple case of copying a single file without
-          renaming it is specified as
-          `{'my_asset_file.txt': '/path/to/my_asset_file.txt'}`.
-      as_text: Whether or not to write the SavedModel proto in text format.
-      clear_devices: Whether or not to clear the device field.
-      strip_default_attrs: Whether or not to remove default-valued attributes
-          from the NodeDefs.
-      modes: List contains PREDICT, TRAIN or TEST.
-
-    Returns:
-      Export directory if it's chief.
-    '''
-    if hvd.rank() != 0:
-      return None
-
-    export_dir = get_timestamped_export_dir(export_dir_base)
-    with ops.Graph().as_default():
-      with Context.scope(mode=ModeKeys.PREDICT, comm_pool_name=ModeKeys.PREDICT):
-        # Build graph.
-        signature_def_map = signature_defs_and_main_op_fn()
-        main_op = None
-        if isinstance(signature_def_map, (tuple, list)):
-          if len(signature_def_map) > 1:
-            main_op = signature_def_map[1]
-          signature_def_map = signature_def_map[0]
-        if not main_op:
-          main_op = _monitored_session.Scaffold.default_local_init_op()
-        if modes is None:
-          modes = [ModeKeys.PREDICT, ModeKeys.TRAIN, ModeKeys.EVAL]
-        modes = [
-          m for m in modes
-          if SIGNATURE_KEY_MAP[m] in signature_def_map]
-        signature_def_map = {
-          k: signature_def_map[k] for k in signature_def_map
-          if k in [SIGNATURE_KEY_MAP[m] for m in modes]}
-        signature_tags = [EXPORT_TAG_MAP[m][0] for m in modes]
-
-        b = builder.SavedModelBuilder(export_dir, **kwargs)
-        b._has_saved_variables = True  # pylint: disable=protected-access
-
-        # Copy variables.
-        saved_model_utils.get_or_create_variables_dir(export_dir)
-        export_checkpoint_path = saved_model_utils.get_variables_path(export_dir)
-        checkpoint_files = [
-          *gfile.Glob(f'{checkpoint_path}.index'),
-          *gfile.Glob(f'{checkpoint_path}.data-?????-of-?????')]
-        for f in checkpoint_files:
-          export_ckpt = re.sub(
-            compat.as_text(checkpoint_path),
-            compat.as_text(export_checkpoint_path),
-            f)
-          gfile.Copy(f, export_ckpt)
-
-        # Add MetaGraph.
-        b.add_meta_graph(
-          tags=signature_tags,
-          signature_def_map=signature_def_map,
-          assets_collection=ops.get_collection(ops.GraphKeys.ASSET_FILEPATHS),
-          clear_devices=clear_devices,
-          main_op=main_op,
-          strip_default_attrs=strip_default_attrs)
-
-        # Save model.
-        b.save(as_text=as_text)
-
-        # Save extras.
-        if assets_extra:
-          assets_extra_path = os.path.join(
-            export_dir, constants.EXTRA_ASSETS_DIRECTORY)
-          for dst, src in assets_extra.items():
-            target = os.path.join(assets_extra_path, compat.as_bytes(dst))
-            gfile.MakeDirs(os.path.dirname(target))
-            gfile.Copy(src, target)
-
-  return export_all(export_dir_base,
-                    checkpoint_path,
-                    lambda: {SIGNATURE_KEY_MAP[mode]: signature_def_fn()},
-                    assets_extra=assets_extra,
-                    as_text=as_text,
-                    clear_devices=clear_devices,
-                    strip_default_attrs=strip_default_attrs,
-                    modes=[mode]) 

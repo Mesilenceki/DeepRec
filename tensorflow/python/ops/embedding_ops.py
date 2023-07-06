@@ -1686,8 +1686,19 @@ def group_embedding_lookup_sparse(params,
                             + sp_ids) as name_scope:
             emb_vec = sok.lookup_sparse(params, sp_ids, combiners=combiners)
     elif strategy == DistStrategy.HB:
-      #TO BE IMPLEMENT
-      pass
+      emb_vec = []
+      with ops.name_scope(name, 'group_embedding_lookup', params
+                            + sp_ids) as name_scope:
+          for idx, embedding in enumerate(params):
+            if not ignore_weights:
+              sp_weight = sp_weights[idx]
+            else:
+              sp_weight = None
+            emb_vec.append(embedding_lookup_sparse(embedding,
+                                              sp_ids[idx],
+                                              sp_weights[idx],
+                                              combiner=combiners[idx]))
+
       
     elif strategy == DistStrategy.LOCALIZED:
 

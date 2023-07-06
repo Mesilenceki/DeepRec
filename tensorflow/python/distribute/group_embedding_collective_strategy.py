@@ -45,7 +45,8 @@ class CollectiveStrategy:
                 sok.init()
             except:
                 raise ImportError(
-                    "While param `strategy` in enable_distributed_strategyis given `sok`, sok module initialize error,please double check"
+                    "While param `strategy` in enable_distributed_strategyis given `sok`,"
+                    " sok module initialize error,please double check"
                 )
 
             self._sok = sok

@@ -245,7 +245,6 @@ def launch(command):
 
         if len(device_to_ports) < 1:
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
-            os.environ["HB_OP_OPTIMIZATION_DISABLED"] = "1"
             local_world_size_str = "1"
             horovod_command = func_horovod_command(local_world_size_str)
             subprocess.Popen(horovod_command, stdout=sys.stdout, stderr=sys.stderr)
@@ -293,7 +292,6 @@ def launch(command):
             os.environ["TF_TASK_TYPE"] = str(task_type)
             os.environ["TF_TASK_INDEX"] = str(task_id)
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
-            os.environ["HB_OP_OPTIMIZATION_DISABLED"] = "1"
             local_world_size_str = "1"
             horovod_command = func_horovod_command(local_world_size_str)
             subprocess.Popen(horovod_command, stdout=sys.stdout, stderr=sys.stderr)
@@ -347,7 +345,7 @@ def launch(command):
         return
 
     else:
-        logging.error("COLLECTIVE_STRATEGY is unrecognized......")
+        logging.error("ENV `COLLECTIVE_STRATEGY` is unrecognized......")
         return
 
 
