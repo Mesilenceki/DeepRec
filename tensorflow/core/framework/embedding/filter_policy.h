@@ -34,11 +34,19 @@ struct RestoreBuffer {
     freq_buffer = new char[buffer_size];
   }
 
+  explicit RestoreBuffer(char* i_key_buffer, char* i_value_buffer,
+                         char* i_version_buffer, char* i_freq_buffer) {
+    key_buffer = i_key_buffer;
+    value_buffer = i_value_buffer;
+    version_buffer = i_version_buffer;
+    freq_buffer = i_freq_buffer;
+  }
+
   ~RestoreBuffer() {
-    delete []key_buffer;
-    delete []value_buffer;
-    delete []version_buffer;
-    delete []freq_buffer;
+    // delete []key_buffer;
+    // delete []value_buffer;
+    // delete []version_buffer;
+    // delete []freq_buffer;
   }
 };
 

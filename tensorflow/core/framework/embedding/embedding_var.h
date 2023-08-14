@@ -592,6 +592,56 @@ class EmbeddingVar : public ResourceBase {
                           default_value_);
   }
 
+  Status GetSnapshot(std::vector<K>* key_list,
+      std::vector<ValuePtr<V>*>* value_ptr_list,
+      int partition_id, int partition_num) {
+    return storage_->GetSnapshot(key_list, value_ptr_list, partition_id, partition_num);
+  }
+
+  void FilterStorage(K* key_list, V* value_list,
+                      int64* version_list, int64* freq_list,
+                      std::vector<K>& filtered_keys_list,
+                      std::vector<ValuePtr<V>*>& filtered_value_ptr_list) {
+
+    for (int64 i = 0; i < filtered_keys_list.size(); ++i) {
+      V* val = filtered_value_ptr_list[i]->GetValue(emb_config_.emb_index,
+        storage_->GetOffset(emb_config_.emb_index));
+      V* primary_val = filtered_value_ptr_list[i]->GetValue(
+          emb_config_.primary_emb_index,
+          storage_->GetOffset(emb_config_.primary_emb_index));
+      key_list[i] = filtered_keys_list[i];
+      if (emb_config_.filter_freq != 0 || emb_config_.record_freq) {
+        int64 dump_freq = filter_->GetFreq(
+            filtered_keys_list[i], filtered_value_ptr_list[i]);
+        freq_list[i] = dump_freq;
+      }
+      if (emb_config_.steps_to_live != 0 || emb_config_.record_version) {
+        int64 dump_version = filtered_value_ptr_list[i]->GetStep();
+        version_list[i] =dump_version;
+      }
+      if (val != nullptr && primary_val != nullptr) {
+        memcpy(value_list + i * value_len_, val, sizeof(V) * value_len_);
+      } else if (val == nullptr && primary_val != nullptr) {
+        // only forward, no backward
+        // value_list->emplace_back(reinterpret_cast<V*>(-1));
+      } else {
+        // feature filtered
+        // value_list->emplace_back(nullptr);
+      }
+    }
+  }
+
+  Status ImportStorage(int64 key_num, int partition_id,
+                       int partition_num, const K* key_list, const V* value_list,
+                       const int64* version_list, const int64* freq_list,
+                       const Eigen::GpuDevice* device = nullptr) {
+    RestoreBuffer restore_buff((char*)key_list, (char*)value_list,
+                                (char*)version_list, (char*)freq_list);
+
+    return storage_->RestoreFeatures(key_num, 1000, partition_id, partition_num,
+                                      value_len_, false, false, emb_config_, device,
+                                      filter_, restore_buff);
+  }
   mutex* mu() {
     return &mu_;
   }

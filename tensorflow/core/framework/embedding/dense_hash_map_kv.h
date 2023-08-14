@@ -124,6 +124,26 @@ class DenseHashMap : public KVInterface<K, V> {
     return Status::OK();
   }
 
+  Status GetSnapshot(std::vector<K>* key_list,
+      std::vector<ValuePtr<V>*>* value_ptr_list,
+      int partition_id, int partition_nums) override {
+    // std::pair<const K, ValuePtr<V>*> *hash_map_dump;
+    // int64 bucket_count;
+    // auto it = hash_map_.GetSnapshot();
+    // hash_map_dump = it.first;
+    // bucket_count = it.second;
+    // for (int64 j = 0; j < bucket_count; j++) {
+    //   if (hash_map_dump[j].first != LocklessHashMap<K, V>::EMPTY_KEY_ 
+    //        && hash_map_dump[j].first != LocklessHashMap<K, V>::DELETED_KEY_
+    //        && hash_map_dump[j].first % partition_nums != partition_id) {
+    //     key_list->emplace_back(hash_map_dump[j].first);
+    //     value_ptr_list->emplace_back(hash_map_dump[j].second);
+    //   }
+    // }
+    // free(hash_map_dump);
+    return Status::OK();
+  }
+
   std::string DebugString() const override {
     return "";
   }

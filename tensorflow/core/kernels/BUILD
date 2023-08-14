@@ -5442,6 +5442,50 @@ tf_kernel_library(
 )
 
 tf_kernel_library(
+    name = "elastic_partition_kernel",
+    srcs = ["elastic_partition_op.cc",
+            "redistribution_ops.cc"],
+    deps = ["//third_party/eigen3",
+            "//tensorflow/core/kernels:gpu_device_array",
+            "//tensorflow/core/util/tensor_bundle",
+            ":training_op_helpers",
+            ":variable_ops",
+            ":save_restore_tensor",
+            "//tensorflow/core:embedding_gpu",
+            "@sparsehash_c11//:dense_hash_map",
+            "@libcuckoo//:libcuckoo",
+            ":unique_ali_op",
+            "@com_github_google_leveldb//:leveldb",] + DYNAMIC_DEPS + mkl_deps() +
+           if_cuda(["@cub_archive//:cub",
+                    ":fused_embedding_common_cuh",
+                    "@cuCollections//:cuco_hash_table"]),
+)
+
+tf_cc_test(
+    name = "elastic_partition_test",
+    size = "small",
+    srcs = ["elastic_partition_op_test.cc",
+            "redistribution_ops_test.cc"],
+    extra_copts = ["-fexceptions", "-g"],
+    deps = [
+        ":elastic_partition_kernel",
+        ":kv_variable_ops",
+        ":ops_testutil",
+        ":ops_util",
+        "//tensorflow/cc:cc_ops",
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:framework_internal",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:tensorflow",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
+    ],
+)
+
+tf_kernel_library(
     name = "group_embedding_ops",
     hdrs = ["group_embedding/group_embedding_lookup_sparse_forward_base_ops.h"],
     srcs = ["group_embedding/group_embedding_lookup_ops.cc",

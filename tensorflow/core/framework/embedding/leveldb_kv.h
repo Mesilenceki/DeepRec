@@ -195,6 +195,28 @@ class LevelDBKV : public KVInterface<K, V> {
     return Status::OK();
   }
 
+  Status GetSnapshot(std::vector<K>* key_list,
+      std::vector<ValuePtr<V>*>* value_ptr_list,
+      int partition_id, int partition_nums) override {
+    ReadOptions options;
+    options.snapshot = db_->GetSnapshot();
+    leveldb::Iterator* it = db_->NewIterator(options);
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+      K key;
+      memcpy((char*)&key, it->key().ToString().data(), sizeof(K));
+      if (key % partition_nums != partition_id) continue;
+      key_list->emplace_back(key);
+      ValuePtr<V>* value_ptr =
+          new NormalGPUValuePtr<V>(ev_allocator(), 1);
+      memcpy((char *)value_ptr->GetPtr(),
+             it->value().ToString().data(),
+             sizeof(FixedLengthHeader));
+      value_ptr_list->emplace_back(value_ptr);
+    }
+    delete it;
+    return Status::OK();
+  }
+
   int64 Size() const override {
     return counter_->size();
   }

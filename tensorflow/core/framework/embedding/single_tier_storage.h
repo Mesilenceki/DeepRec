@@ -239,6 +239,13 @@ class SingleTierStorage : public Storage<K, V> {
     return kv_->GetSnapshot(key_list, value_ptr_list);
   }
 
+  Status GetSnapshot(std::vector<K>* key_list,
+      std::vector<ValuePtr<V>*>* value_ptr_list,
+      int partition_id, int partition_nums) override {
+    mutex_lock l(Storage<K, V>::mu_);
+    return kv_->GetSnapshot(key_list, value_ptr_list, partition_id, partition_nums);
+  }
+
   Status Save(
       const std::string& tensor_name,
       const std::string& prefix,

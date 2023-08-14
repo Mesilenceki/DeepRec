@@ -1650,6 +1650,7 @@ cc_library(
         "//tensorflow/core/kernels:functional_ops",
         "//tensorflow/core/kernels:fused_embedding_ops",
         "//tensorflow/core/kernels:group_embedding_ops",
+        "//tensorflow/core/kernels:elastic_partition_kernel",
         "//tensorflow/core/kernels/data:parquet_dataset_ops",
         "//tensorflow/core/kernels:dice_ops",
         "//tensorflow/core/kernels:fused_l2_normalize_ops",
@@ -2457,6 +2458,27 @@ tf_proto_library_cc(
     cc_api_version = 2,
     cc_stubby_versions = ["2"],
     protodeps = [":master_proto"],
+    visibility = [
+        "//tensorflow:internal",
+    ],
+)
+
+#tf_proto_library_cc(
+#    name = "elastic_proto",
+#    srcs = ["protobuf/elastic_training.proto"],
+#    cc_api_version = 2,
+#    protodeps = tf_additional_all_protos(),
+#    visibility = ["//tensorflow:internal"],
+#)
+
+tf_proto_library_cc(
+    name = "elastic_service_proto",
+    srcs = ["protobuf/elastic_training.proto"],
+    has_services = 1,
+    cc_api_version = 2,
+    cc_grpc_version = 1,
+    cc_stubby_versions = ["2"],
+    protodeps = tf_additional_all_protos(),
     visibility = [
         "//tensorflow:internal",
     ],
@@ -3484,6 +3506,8 @@ tf_cuda_library(
         "graph/quantize_training.cc",
         "graph/embedding_pass.cc",
         "graph/smart_stage_pass.cc",
+        "graph/elastic_partition_pass.h",
+        "graph/elastic_partition_pass.cc",
         "public/session.h",
         "public/session_options.h",
         "public/version.h",
@@ -3491,6 +3515,7 @@ tf_cuda_library(
     hdrs = CORE_CPU_LIB_HEADERS,
     copts = tf_copts() + tf_openmp_copts(),
     deps = [
+        "@jsoncpp_git//:jsoncpp",
         ":bfc_allocator",
         ":graph",
         ":framework",
@@ -4715,6 +4740,39 @@ tf_cc_test_mkl(
         ":test",
         ":test_main",
         ":testlib",
+    ],
+)
+
+tf_cc_test(
+    name = "elastic_partition_tests",
+    size = "small",
+    srcs = [
+        "graph/elastic_partition_pass.h",
+        "graph/elastic_partition_pass_test.cc",
+    ],
+    linkstatic = 1,
+    deps = [
+        ":core_cpu_lib",
+        ":core",
+        ":core_cpu",
+        ":core_cpu_internal",
+        ":direct_session_internal",
+        ":framework",
+        ":framework_internal",
+        ":lib",
+        ":lib_internal",
+        ":ops",
+        ":protos_all_cc",
+        ":test",
+        ":test_main",
+        ":testlib",
+        "//tensorflow/cc:cc_ops",
+        "//tensorflow/cc:scope",
+        "//tensorflow/cc:sendrecv_ops",
+        "//tensorflow/core/kernels:ops_util",
+        "//tensorflow/core/kernels:elastic_partition_kernel",
+        "//tensorflow/core/kernels:kv_variable_ops",
+        "//third_party/eigen3",
     ],
 )
 

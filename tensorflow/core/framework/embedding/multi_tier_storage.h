@@ -98,6 +98,12 @@ class MultiTierStorage : public Storage<K, V> {
     LOG(FATAL)<<"Can't get snapshot of MultiTierStorage.";
   }
 
+  Status GetSnapshot(std::vector<K>* key_list,
+                     std::vector<ValuePtr<V>*>* value_ptr_list,
+                     int partition_id, int partition_nums) override {
+    LOG(FATAL)<<"Can't get snapshot of MultiTierStorage.";
+  }
+
   void CopyEmbeddingsFromCPUToGPU(
       int total, const K* keys,
       const std::list<int64>& copyback_cursor,

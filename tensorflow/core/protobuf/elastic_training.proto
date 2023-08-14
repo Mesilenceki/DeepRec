@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package tensorflow;
+option cc_enable_arenas = true;
+
+message CheckElasticRequest {
+  int32 task_index = 1;
+}
+
+message CheckElasticResponse {
+  bool do_scaling = 2;
+}
+
+message FetchParamsRequest {
+  repeated string names = 3;
+}
+
+message FetchParamsResponse {
+  map<string, int32> param_partition_map = 4;
+}
+
+message UpdateServerDefRequest {
+}
+
+message UpdateServerDefResponse {
+  string ret = 5;
+}
+
+service ElasticTrainingService {
+    rpc IsReadyScaling(CheckElasticRequest) returns (CheckElasticResponse);
+    rpc FetchParamsMeta(FetchParamsRequest) returns (FetchParamsResponse);
+    rpc UpdateServerDef(UpdateServerDefRequest) returns (UpdateServerDefResponse);
+}
+
