@@ -11,9 +11,8 @@ class ElasticTrainingPass : public GraphOptimizationPass {
   public:
     Status Run(const GraphOptimizationPassOptions& options) override;
 
-    Status ElasticTrainingGraph(Graph* g);
+    Status RewriteTrainingGraph(Graph* g, bool is_test = false);
     Status RewriteElasticPartitionGraph(Graph* g, std::vector<Node*>& ev_node_vec);
-    Status AddEmbeddingSubGraph(Graph* g, bool is_test = false);
     Status InitEVMeta(Graph* g,
                       std::unordered_map<std::string, Node* >& ev_nodes_map,
                       std::unordered_map<std::string, std::pair<bool, int>>& ev_metas_map,
@@ -22,12 +21,25 @@ class ElasticTrainingPass : public GraphOptimizationPass {
     Status InitNewPartitionSubGraph(Graph* g,
                                     std::unordered_map<std::string, std::pair<bool, int>>& ev_metas_map,
                                     std::unordered_map<std::string, Node*>& ev_nodes_map,
-                                    std::unordered_map<std::string, std::vector<Node*>> ev_to_origin_map,
+                                    std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map,
                                     bool is_test);
-    Status RewriteRedistributionGraph(Graph* g,
+    Status ScalingUpRedistributionGraph(Graph* g,
                                       std::vector<Node*>& new_ev_node_vec, int ev_partition_num);
     
+    Status ScalingDownRedistributionGraph(Graph* g,
+                                      std::vector<Node*>& new_ev_node_vec, int ev_partition_num);
+
     Status UpdatePartitionNums();
+    Status InitNewSaveSubGraph(Graph* g,
+                                std::unordered_map<std::string, std::pair<bool, int>>& ev_metas_map,
+                                std::unordered_map<std::string, Node*>& ev_nodes_map,
+                                std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map);
+    
+    Status ScalingUpBackWardGraph(Graph* g,
+                                  std::vector<Node*>& ev_node_vec,
+                                  int ev_partition_num);
+
+              
   private:
     int partition_nums_;
 };

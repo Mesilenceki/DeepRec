@@ -28,6 +28,7 @@ import time
 
 import numpy as np
 import six
+import types
 
 from tensorflow.core.framework.summary_pb2 import Summary
 from tensorflow.core.protobuf import config_pb2
@@ -47,6 +48,7 @@ from tensorflow.python.training import training_util
 from tensorflow.python.training.session_run_hook import SessionRunArgs
 from tensorflow.python.training.summary_io import SummaryWriterCache
 from tensorflow.python.util.tf_export import tf_export
+from tensorflow.python import pywrap_tensorflow as tf_session
 
 _HOOKS = "hooks"
 _STEPS_PER_RUN_VAR = "steps_per_run"
@@ -322,6 +324,109 @@ def get_or_create_steps_per_run_variable():
         collections=[collection_name, ops.GraphKeys.LOCAL_VARIABLES],
         use_resource=True)
 
+
+def create(self):
+  self._session = None
+  opts = tf_session.TF_NewSessionOptions(target=self._target, config=self._config)
+  try:
+    # pylint: disable=protected-access
+    self._session = tf_session.TF_NewSessionRef(self._graph._c_graph, opts)
+    # pylint: enable=protected-access
+    self._closed = False
+  finally:
+    tf_session.TF_DeleteSessionOptions(opts)
+
+@tf_export(v1=["train.ElasticTrainingHook"])
+class ElasticTrainingHook(session_run_hook.SessionRunHook):
+  def __init__(self):
+    self._task_index = os.environ.get('TASK_INDEX', 0)
+    self._aimaster_addr = os.environ.get("AIMASTER_ADDR", "")
+    self._count = 1
+
+  def begin(self):
+    self.op_list = self._init_repartition_op()
+
+  def after_create_session(self, session, coord):
+    session.create = types.MethodType(create, session)
+      
+  def after_run(self, run_context, run_value):
+    if self._count % 500 == 0:
+      channel = grpc.insecure_channel(ai_master_addr)
+      CheckElasticRequest req
+      req.global_step = global_step
+      req.task_index = self._task_index
+      _stub = check_elastic_service_pb2_grpc.ElasticTrainingServiceStub(channel)
+      run_context.session.close()
+      #inform aimaster to restart server
+      # if self._task_index == 0:
+      #     pass
+      run_context.session.create()
+      if self._task_index == 0:
+        graph = ops.get_default_graph()
+        dataset_init = graph.get_operation_by_name("make_initializer")
+        run_context.session.run(self.op_list)
+        run_context.session.run([dataset_init])
+      self._count = 1
+    else:
+      self._count+=1
+
+  def _init_repartition_op(self):
+    op_list = []
+    ev_list = ops.get_collection(ops.GraphKeys.EMBEDDING_VARIABLES)
+    import_storage_map = defaultdict(lambda: defaultdict(list))
+    def process_ev_name(ev):
+      ev_name = ev.name.split(":")[0]
+      idx = ev_name.find("part_")
+      post_idx = ev_name[idx:].find("/")
+      if (post_idx == -1):
+        pre_name = ev_name[:idx]
+      else:
+          pre_name = ev_name[:idx] + ev_name[idx:][post_idx:]
+      return pre_name
+
+    for ev in ev_list:
+      is_partitioned_ev = not isinstance(ev._save_slice_info, str)
+      save_slice_info = ev._save_slice_info
+      partition_num = save_slice_info.full_shape[0] if is_partitioned_ev else 1
+      pre_name = process_ev_name(ev)
+      import_storage_map[pre_name]["keys"] = [None for _ in range(partition_num)]
+      import_storage_map[pre_name]["values"]  = [None for _ in range(partition_num)]
+      import_storage_map[pre_name]["versions"] = [None for _ in range(partition_num)]
+      import_storage_map[pre_name]["freqs"] = [None for _ in range(partition_num)]
+
+    for ev in ev_list:
+      is_partitioned_ev = not isinstance(ev._save_slice_info, str)
+      partition_id = 0
+      partition_num = 1
+      save_slice_info = ev._save_slice_info
+      pre_name = process_ev_name(ev)
+      key_type = dtypes.as_dtype(ev.handle.op.get_attr("Tkeys"))
+      dtype = dtypes.as_dtype(ev.handle.op.get_attr("dtype"))
+      if save_slice_info is not None:
+        partition_id = save_slice_info.var_offset[0] if is_partitioned_ev else 0
+        partition_num = save_slice_info.full_shape[0] if is_partitioned_ev else 1
+      unneeded_ids, unneeded_values, unneeded_versions, unneeded_freqs = gen_kv_variable_ops.filter_storage(ev.handle,key_type, dtype, partition_id=partition_id, new_partition_nums=partition_num)
+      import_storage_map[pre_name]["keys"][partition_id] = unneeded_ids
+      import_storage_map[pre_name]["values"][partition_id] = unneeded_values
+      import_storage_map[pre_name]["versions"][partition_id] = unneeded_versions
+      import_storage_map[pre_name]["freqs"][partition_id] = unneeded_freqs
+
+    for ev in ev_list:
+      pre_name = process_ev_name(ev)
+      is_partitioned_ev = not isinstance(ev._save_slice_info, str)
+      partition_id = 0
+      save_slice_info = ev._save_slice_info
+      if save_slice_info is not None:
+        partition_id = save_slice_info.var_offset[0] if is_partitioned_ev else 0
+      imported_keys = [import_storage_map[pre_name]["keys"][i] for i in range(len(import_storage_map[pre_name]["keys"])) if i != partition_id]
+      imported_values = [import_storage_map[pre_name]["values"][i] for i in range(len(import_storage_map[pre_name]["values"])) if i != partition_id]
+      imported_versions = [import_storage_map[pre_name]["versions"][i] for i in range(len(import_storage_map[pre_name]["versions"])) if i != partition_id]
+      imported_freqs = [import_storage_map[pre_name]["freqs"][i] for i in range(len(import_storage_map[pre_name]["freqs"])) if i != partition_id]
+      op_list.append(gen_kv_variable_ops.import_storage(ev.handle, imported_keys, imported_values,
+                                                           imported_versions, imported_freqs))
+
+    return op_list
+        
 
 class _MultiStepStopAtStepHook(session_run_hook.SessionRunHook):
   """Hook that requests stop at a specified step."""

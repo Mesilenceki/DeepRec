@@ -19,37 +19,35 @@ limitations under the License.
 
 namespace tensorflow {
 
-REGISTER_OP("FilterStorageOp")
-    .Input("resource: resource")
-    .Attr("partition_id: int = 0")
-    .Attr("new_partition_nums: int >= 1 = 1")
-    .Output("keys: Tkeys")
-    .Output("values: dtype")
-    .Output("versions: int64")
-    .Output("freqs: int64")
-    .Attr("Tkeys: {int64, int32}")
-    .Attr("dtype: type")
-    .Doc(R"(
-Input current partition nums of embedding variable, the last
-partition variable is new by default.
-Do re distribution of embedding variable.
-)");
+// REGISTER_OP("FilterStorage")
+//     .Input("resource: resource")
+//     .Attr("partition_id: int = 0")
+//     .Attr("new_partition_nums: int >= 1 = 1")
+//     .Output("keys: Tkeys")
+//     .Output("values: dtype")
+//     .Output("versions: int64")
+//     .Output("freqs: int64")
+//     .Attr("Tkeys: {int64, int32}")
+//     .Attr("dtype: type")
+//     .Doc(R"(
+// Input current parition_id embedding variable.Filter redundent ids
+//     according to partition num.
+// )");
 
-REGISTER_OP("ImportStorageOp")
-    .Input("resource: resource")
-    .Input("keys: partition_nums * Tkeys")
-    .Input("values: partition_nums * dtype")
-    .Input("versions: partition_nums * int64")
-    .Input("freqs: partition_nums * int64")
-    .Attr("partition_id: int = 0")
-    .Attr("partition_nums: int >= 1 = 1")
-    .Attr("Tkeys: {int64, int32}")
-    .Attr("dtype: type")
-    .Doc(R"(
-Input current partition nums of embedding variable, the last
-partition variable is new by default.
-Do re distribution of embedding variable.
-)");
+// REGISTER_OP("ImportStorage")
+//     .Input("resource: resource")
+//     .Input("keys: partition_nums * Tkeys")
+//     .Input("values: partition_nums * dtype")
+//     .Input("versions: partition_nums * int64")
+//     .Input("freqs: partition_nums * int64")
+//     .Attr("partition_id: int = 0")
+//     .Attr("partition_nums: int >= 1 = 1")
+//     .Attr("Tkeys: {int64, int32}")
+//     .Attr("dtype: type")
+//     .Doc(R"(
+// Input current parition_id embedding variable and ids from other partion
+//     embedding variables.Load them according to new partition_num.
+// )");
 
 template<typename TKey, typename TValue>
 class FilterStorageOp : public OpKernel {
@@ -95,7 +93,7 @@ class FilterStorageOp : public OpKernel {
 
 #define REGISTER_CPU_KERNELS(key_type, value_type) \
   REGISTER_KERNEL_BUILDER(                         \
-        Name("FilterStorageOp")                    \
+        Name("FilterStorage")                    \
             .Device(DEVICE_CPU)                    \
             .TypeConstraint<key_type>("Tkeys")     \
             .TypeConstraint<value_type>("dtype"),  \
@@ -142,7 +140,7 @@ class ImportStorageOp : public OpKernel {
 };
 
 #define REGISTER_CPU_KERNELS(key_type, value_type) \
-  REGISTER_KERNEL_BUILDER(Name("ImportStorageOp")  \
+  REGISTER_KERNEL_BUILDER(Name("ImportStorage")    \
           .Device(DEVICE_CPU)                      \
           .TypeConstraint<key_type>("Tkeys")       \
           .TypeConstraint<value_type>("dtype"),    \

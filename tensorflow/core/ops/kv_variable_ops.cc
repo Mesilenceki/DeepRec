@@ -229,6 +229,67 @@ is_initialized: a scalar boolean which is true if the variable has been
 initialized.
 )doc");
 
+REGISTER_OP("ElasticPartition")
+    .Input("data: TKey")
+    .Input("indices: int32")
+    .Output("p_data: num_partitions * TKey")
+    .Output("p_indices: num_partitions * int32")
+    .Attr("num_partitions: int")
+    .Attr("TKey: {int64, int32}")
+    .SetShapeFn([](InferenceContext* c) {
+      int64 num_partitions;
+      TF_RETURN_IF_ERROR(c->GetAttr("num_partitions", &num_partitions));
+
+      ShapeHandle data_shape = c->input(0);
+
+      // The partition shape is dynamic in the 0th dimension, and matches
+      // data_shape in the remaining dimensions.
+      ShapeHandle unknown_dim0 = c->MakeShape({c->UnknownDim()});
+
+      const int64 rank = c->Rank(data_shape);
+      ShapeHandle data_suffix_shape;
+      TF_RETURN_IF_ERROR(c->Subshape(data_shape, rank, &data_suffix_shape));
+      ShapeHandle result_shape;
+      TF_RETURN_IF_ERROR(
+          c->Concatenate(unknown_dim0, data_suffix_shape, &result_shape));
+
+      for (int i = 0; i < c->num_outputs(); ++i) {
+        c->set_output(i, result_shape);
+      }
+
+      return Status::OK();
+    });
+
+REGISTER_OP("FilterStorage")
+    .Input("resource: resource")
+    .Attr("partition_id: int = 0")
+    .Attr("new_partition_nums: int >= 1 = 1")
+    .Output("keys: Tkeys")
+    .Output("values: dtype")
+    .Output("versions: int64")
+    .Output("freqs: int64")
+    .Attr("Tkeys: {int64, int32}")
+    .Attr("dtype: type")
+    .Doc(R"(
+Input current parition_id embedding variable.Filter redundent ids
+    according to partition num.
+)");
+
+REGISTER_OP("ImportStorage")
+    .Input("resource: resource")
+    .Input("keys: partition_nums * Tkeys")
+    .Input("values: partition_nums * dtype")
+    .Input("versions: partition_nums * int64")
+    .Input("freqs: partition_nums * int64")
+    .Attr("partition_id: int = 0")
+    .Attr("partition_nums: int >= 1 = 1")
+    .Attr("Tkeys: {int64, int32}")
+    .Attr("dtype: type")
+    .Doc(R"(
+Input current parition_id embedding variable and ids from other partion
+    embedding variables.Load them according to new partition_num.
+)");
+
 REGISTER_OP("KvResourceInitCacheStrategyOp")
     .Input("resource: resource")
     .Attr("cache_strategy: int = 1")

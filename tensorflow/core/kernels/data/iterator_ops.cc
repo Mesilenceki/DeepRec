@@ -308,7 +308,7 @@ void IteratorHandleOp::Compute(OpKernelContext* context) LOCKS_EXCLUDED(mu_) {
       }
 
       ResourceMgr* mgr = context->resource_manager();
-      OP_REQUIRES_OK(context, cinfo_.Init(mgr, def()));
+      OP_REQUIRES_OK(context, cinfo_.Init(mgr, def(), true));
 
       IteratorResource* resource;
       OP_REQUIRES_OK(

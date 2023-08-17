@@ -32,7 +32,7 @@ namespace embedding {
 class ReDistributionOpTest : public OpsTestBase {
  protected:
   void MakeFSOp() {
-    TF_ASSERT_OK(NodeDefBuilder("filter_storage", "FilterStorageOp")
+    TF_ASSERT_OK(NodeDefBuilder("filter_storage", "FilterStorage")
                 .Input(FakeInput(DT_RESOURCE))
                 .Attr("partition_id", 0)
                 .Attr("new_partition_nums", 4)
@@ -42,7 +42,7 @@ class ReDistributionOpTest : public OpsTestBase {
   }
 
   void MakeISOp() {
-    TF_ASSERT_OK(NodeDefBuilder("import_storage", "ImportStorageOp")
+    TF_ASSERT_OK(NodeDefBuilder("import_storage", "ImportStorage")
                 .Input(FakeInput(DT_RESOURCE))
                 .Input(FakeInput(1, DT_INT64))
                 .Input(FakeInput(1, DT_FLOAT))

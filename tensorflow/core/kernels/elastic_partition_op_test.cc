@@ -47,104 +47,104 @@ class ElasticPartitionOpTest : public OpsTestBase {
   }
 };
 
-// TEST_F(ElasticPartitionOpTest, Simple_OneD) {
-//   MakeOp();
+TEST_F(ElasticPartitionOpTest, Simple_OneD) {
+  MakeOp();
 
-//   TF_ASSERT_OK(InitOp());
+  TF_ASSERT_OK(InitOp());
 
-//   // Feed and run
-//   AddInputFromArray<int64>(TensorShape({6}), {0, 13, 2, 39, 4, 17});
-//   AddInputFromArray<int32>(TensorShape({6}), {0, 1, 2, 3, 4, 5});
-//   TF_ASSERT_OK(RunOpKernel());
+  // Feed and run
+  AddInputFromArray<int64>(TensorShape({6}), {0, 13, 2, 39, 4, 17});
+  AddInputFromArray<int32>(TensorShape({6}), {0, 1, 2, 3, 4, 5});
+  TF_ASSERT_OK(RunOpKernel());
 
-//   // Check the output sizes
-//   {  // Output 0
-//     Tensor expected(allocator(), DT_INT64, TensorShape({2}));
-//     test::FillValues<int64>(&expected, {0, 4});
-//     test::ExpectTensorEqual<int64>(expected, *GetOutput(0));
+  // Check the output sizes
+  {  // Output 0
+    Tensor expected(allocator(), DT_INT64, TensorShape({2}));
+    test::FillValues<int64>(&expected, {0, 4});
+    test::ExpectTensorEqual<int64>(expected, *GetOutput(0));
 
-//     Tensor expected_id(allocator(), DT_INT32, TensorShape({2}));
-//     test::FillValues<int32>(&expected_id, {0, 4});
-//     test::ExpectTensorEqual<int32>(expected_id, *GetOutput(4));
-//   }
-//   {  // Output 1
-//     Tensor expected(allocator(), DT_INT64, TensorShape({2}));
-//     test::FillValues<int64>(&expected, {13, 17});
-//     test::ExpectTensorEqual<int64>(expected, *GetOutput(1));
+    Tensor expected_id(allocator(), DT_INT32, TensorShape({2}));
+    test::FillValues<int32>(&expected_id, {0, 4});
+    test::ExpectTensorEqual<int32>(expected_id, *GetOutput(4));
+  }
+  {  // Output 1
+    Tensor expected(allocator(), DT_INT64, TensorShape({2}));
+    test::FillValues<int64>(&expected, {13, 17});
+    test::ExpectTensorEqual<int64>(expected, *GetOutput(1));
 
-//     Tensor expected_id(allocator(), DT_INT32, TensorShape({2}));
-//     test::FillValues<int32>(&expected_id, {1, 5});
-//     test::ExpectTensorEqual<int32>(expected_id, *GetOutput(5));
-//   }
-//   {  // Output 2
-//     Tensor expected(allocator(), DT_INT64, TensorShape({1}));
-//     test::FillValues<int64>(&expected, {2});
-//     test::ExpectTensorEqual<int64>(expected, *GetOutput(2));
+    Tensor expected_id(allocator(), DT_INT32, TensorShape({2}));
+    test::FillValues<int32>(&expected_id, {1, 5});
+    test::ExpectTensorEqual<int32>(expected_id, *GetOutput(5));
+  }
+  {  // Output 2
+    Tensor expected(allocator(), DT_INT64, TensorShape({1}));
+    test::FillValues<int64>(&expected, {2});
+    test::ExpectTensorEqual<int64>(expected, *GetOutput(2));
 
-//     Tensor expected_id(allocator(), DT_INT32, TensorShape({1}));
-//     test::FillValues<int32>(&expected_id, {2});
-//     test::ExpectTensorEqual<int32>(expected_id, *GetOutput(6));
-//   }
-//   {  // Output 3
-//     Tensor expected(allocator(), DT_INT64, TensorShape({1}));
-//     test::FillValues<int64>(&expected, {39});
-//     test::ExpectTensorEqual<int64>(expected, *GetOutput(3));
+    Tensor expected_id(allocator(), DT_INT32, TensorShape({1}));
+    test::FillValues<int32>(&expected_id, {2});
+    test::ExpectTensorEqual<int32>(expected_id, *GetOutput(6));
+  }
+  {  // Output 3
+    Tensor expected(allocator(), DT_INT64, TensorShape({1}));
+    test::FillValues<int64>(&expected, {39});
+    test::ExpectTensorEqual<int64>(expected, *GetOutput(3));
 
-//     Tensor expected_id(allocator(), DT_INT32, TensorShape({1}));
-//     test::FillValues<int32>(&expected_id, {3});
-//     test::ExpectTensorEqual<int32>(expected_id, *GetOutput(7));
-//   }
-// }
+    Tensor expected_id(allocator(), DT_INT32, TensorShape({1}));
+    test::FillValues<int32>(&expected_id, {3});
+    test::ExpectTensorEqual<int32>(expected_id, *GetOutput(7));
+  }
+}
 
-// TEST_F(ElasticPartitionOpTest, Simple_TwoD) {
-//   MakeOp();
+TEST_F(ElasticPartitionOpTest, Simple_TwoD) {
+  MakeOp();
 
-//   TF_ASSERT_OK(InitOp());
-//   // Feed and run
-//   AddInputFromArray<int64>(
-//       TensorShape({6, 3}),
-//       {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17});
-//   AddInputFromArray<int32>(TensorShape({6}), {0, 1, 2, 3, 4, 5});
-//   TF_ASSERT_OK(RunOpKernel());
+  TF_ASSERT_OK(InitOp());
+  // Feed and run
+  AddInputFromArray<int64>(
+      TensorShape({6, 3}),
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17});
+  AddInputFromArray<int32>(TensorShape({6}), {0, 1, 2, 3, 4, 5});
+  TF_ASSERT_OK(RunOpKernel());
 
-//   // Check the output sizes
-//   {  // Output 0
-//     Tensor expected(allocator(), DT_INT64, TensorShape({2, 3}));
-//     test::FillValues<int64>(&expected, {0, 1, 2, 12, 13, 14});
-//     test::ExpectTensorEqual<int64>(expected, *GetOutput(0));
+  // Check the output sizes
+  {  // Output 0
+    Tensor expected(allocator(), DT_INT64, TensorShape({2, 3}));
+    test::FillValues<int64>(&expected, {0, 1, 2, 12, 13, 14});
+    test::ExpectTensorEqual<int64>(expected, *GetOutput(0));
 
-//     Tensor expected_id(allocator(), DT_INT32, TensorShape({2}));
-//     test::FillValues<int32>(&expected_id, {0, 4});
-//     test::ExpectTensorEqual<int32>(expected_id, *GetOutput(4));
-//   }
-//   {  // Output 1
-//     Tensor expected(allocator(), DT_INT64, TensorShape({2, 3}));
-//     test::FillValues<int64>(&expected, {3, 4, 5, 15, 16, 17});
-//     test::ExpectTensorEqual<int64>(expected, *GetOutput(1));
+    Tensor expected_id(allocator(), DT_INT32, TensorShape({2}));
+    test::FillValues<int32>(&expected_id, {0, 4});
+    test::ExpectTensorEqual<int32>(expected_id, *GetOutput(4));
+  }
+  {  // Output 1
+    Tensor expected(allocator(), DT_INT64, TensorShape({2, 3}));
+    test::FillValues<int64>(&expected, {3, 4, 5, 15, 16, 17});
+    test::ExpectTensorEqual<int64>(expected, *GetOutput(1));
 
-//     Tensor expected_id(allocator(), DT_INT32, TensorShape({2}));
-//     test::FillValues<int32>(&expected_id, {1, 5});
-//     test::ExpectTensorEqual<int32>(expected_id, *GetOutput(5));
-//   }
-//   {  // Output 2
-//     Tensor expected(allocator(), DT_INT64, TensorShape({3}));
-//     test::FillValues<int64>(&expected, {6, 7, 8});
-//     test::ExpectTensorEqual<int64>(expected, *GetOutput(2));
+    Tensor expected_id(allocator(), DT_INT32, TensorShape({2}));
+    test::FillValues<int32>(&expected_id, {1, 5});
+    test::ExpectTensorEqual<int32>(expected_id, *GetOutput(5));
+  }
+  {  // Output 2
+    Tensor expected(allocator(), DT_INT64, TensorShape({3}));
+    test::FillValues<int64>(&expected, {6, 7, 8});
+    test::ExpectTensorEqual<int64>(expected, *GetOutput(2));
 
-//     Tensor expected_id(allocator(), DT_INT32, TensorShape({1}));
-//     test::FillValues<int32>(&expected_id, {2});
-//     test::ExpectTensorEqual<int32>(expected_id, *GetOutput(6));
-//   }
-//   {  // Output 3
-//     Tensor expected(allocator(), DT_INT64, TensorShape({3}));
-//     test::FillValues<int64>(&expected, {9, 10, 11});
-//     test::ExpectTensorEqual<int64>(expected, *GetOutput(3));
+    Tensor expected_id(allocator(), DT_INT32, TensorShape({1}));
+    test::FillValues<int32>(&expected_id, {2});
+    test::ExpectTensorEqual<int32>(expected_id, *GetOutput(6));
+  }
+  {  // Output 3
+    Tensor expected(allocator(), DT_INT64, TensorShape({3}));
+    test::FillValues<int64>(&expected, {9, 10, 11});
+    test::ExpectTensorEqual<int64>(expected, *GetOutput(3));
 
-//     Tensor expected_id(allocator(), DT_INT32, TensorShape({1}));
-//     test::FillValues<int32>(&expected_id, {3});
-//     test::ExpectTensorEqual<int32>(expected_id, *GetOutput(7));
-//   }
-// }
+    Tensor expected_id(allocator(), DT_INT32, TensorShape({1}));
+    test::FillValues<int32>(&expected_id, {3});
+    test::ExpectTensorEqual<int32>(expected_id, *GetOutput(7));
+  }
+}
 
 // TEST_F(ElasticPartitionOpTest, SomeOutputsEmpty) {
 //   MakeOp();

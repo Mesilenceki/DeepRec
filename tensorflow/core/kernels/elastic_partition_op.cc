@@ -19,6 +19,8 @@ limitations under the License.
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
 #include "tensorflow/core/util/util.h"
+#include "tensorflow/core/lib/core/blocking_counter.h"
+#include "tensorflow/core/lib/core/threadpool.h"
 
 
 namespace tensorflow {
@@ -27,36 +29,36 @@ using shape_inference::DimensionHandle;
 using shape_inference::InferenceContext;
 using shape_inference::ShapeHandle;
 
-REGISTER_OP("ElasticPartition")
-    .Input("data: TKey")
-    .Input("indices: int32")
-    .Output("p_data: num_partitions * TKey")
-    .Output("p_indices: num_partitions * int32")
-    .Attr("num_partitions: int")
-    .Attr("TKey: {int64, int32}")
-    .SetShapeFn([](InferenceContext* c) {
-      int64 num_partitions;
-      TF_RETURN_IF_ERROR(c->GetAttr("num_partitions", &num_partitions));
+// REGISTER_OP("ElasticPartition")
+//     .Input("data: TKey")
+//     .Input("indices: int32")
+//     .Output("p_data: num_partitions * TKey")
+//     .Output("p_indices: num_partitions * int32")
+//     .Attr("num_partitions: int")
+//     .Attr("TKey: {int64, int32}")
+//     .SetShapeFn([](InferenceContext* c) {
+//       int64 num_partitions;
+//       TF_RETURN_IF_ERROR(c->GetAttr("num_partitions", &num_partitions));
 
-      ShapeHandle data_shape = c->input(0);
+//       ShapeHandle data_shape = c->input(0);
 
-      // The partition shape is dynamic in the 0th dimension, and matches
-      // data_shape in the remaining dimensions.
-      ShapeHandle unknown_dim0 = c->MakeShape({c->UnknownDim()});
+//       // The partition shape is dynamic in the 0th dimension, and matches
+//       // data_shape in the remaining dimensions.
+//       ShapeHandle unknown_dim0 = c->MakeShape({c->UnknownDim()});
 
-      const int64 rank = c->Rank(data_shape);
-      ShapeHandle data_suffix_shape;
-      TF_RETURN_IF_ERROR(c->Subshape(data_shape, rank, &data_suffix_shape));
-      ShapeHandle result_shape;
-      TF_RETURN_IF_ERROR(
-          c->Concatenate(unknown_dim0, data_suffix_shape, &result_shape));
+//       const int64 rank = c->Rank(data_shape);
+//       ShapeHandle data_suffix_shape;
+//       TF_RETURN_IF_ERROR(c->Subshape(data_shape, rank, &data_suffix_shape));
+//       ShapeHandle result_shape;
+//       TF_RETURN_IF_ERROR(
+//           c->Concatenate(unknown_dim0, data_suffix_shape, &result_shape));
 
-      for (int i = 0; i < c->num_outputs(); ++i) {
-        c->set_output(i, result_shape);
-      }
+//       for (int i = 0; i < c->num_outputs(); ++i) {
+//         c->set_output(i, result_shape);
+//       }
 
-      return Status::OK();
-    });
+//       return Status::OK();
+//     });
 
 template<typename TKey>
 class ElasticPartitionOp : public OpKernel {
@@ -77,17 +79,78 @@ class ElasticPartitionOp : public OpKernel {
 
         auto e_partitions = partitions.flat<int32>();
         const int64 N = e_partitions.dimension(0);
+
+        
+        BlockingCounter counter(1);
+        auto do_ids_copying = [this, N, &ctx, &partitions, &data_output, &data,
+                               &e_partitions, &counter]() {
+            gtl::InlinedVector<int, 32> output_index(num_partitions_);
+
+            if (partitions.dims() == data->dims()) {
+                // Walk through data and copy the data to the appropriate output tensor
+                const auto data_flat = data->flat<TKey>();
+                std::vector<Eigen::TensorMap<Eigen::Tensor<TKey, 1, Eigen::RowMajor>,
+                                            Eigen::Aligned> >
+                    out_vec;
+                out_vec.reserve(num_partitions_);
+                for (int p = 0; p < num_partitions_; p++) {
+                    out_vec.push_back(data_output[p]->vec<TKey>());
+                }
+                for (int64 i = 0; i < N; i++) {
+                    const int32 p = internal::SubtleMustCopy(e_partitions(i));
+                    auto oi = output_index[p];
+                    OP_REQUIRES(ctx, FastBoundsCheck(oi, out_vec[p].size()),
+                                errors::InvalidArgument(
+                                    "out_vec[", p, "] size: ", out_vec[p].size(),
+                                    " is not LTE output_index[", p, "] : ", oi));
+                    out_vec[p](oi) = data_flat(i);
+                    output_index[p]++;
+                }
+            } else {
+                // If data has extra dimensions, use Eigen slices
+                std::vector<Eigen::TensorMap<Eigen::Tensor<TKey, 2, Eigen::RowMajor>,
+                                            Eigen::Aligned> >
+                    out_flat;
+                out_flat.reserve(num_partitions_);
+                for (int p = 0; p < num_partitions_; p++) {
+                    out_flat.push_back(data_output[p]->flat_outer_dims<TKey>());
+                }
+
+                // Walk through data and copy the data to the appropriate output tensor
+                const int64 slice_size = data->NumElements() / N;
+                const auto data_flat = data->shaped<TKey, 2>({N, slice_size});
+                Eigen::DSizes<Eigen::DenseIndex, 2> sizes(1, slice_size);
+                for (int64 i = 0; i < N; i++) {
+                    // outputs[p][output_index[p]++] = data[i]
+                    const int32 p = internal::SubtleMustCopy(e_partitions(i));
+                    auto oi = output_index[p];
+                    OP_REQUIRES(ctx, FastBoundsCheck(oi, out_flat[p].dimension(0)),
+                                errors::InvalidArgument("Size of output_index: ", oi,
+                                                        " is no longer in range."));
+                    Eigen::DSizes<Eigen::DenseIndex, 2> out_indices(oi, 0);
+                    Eigen::DSizes<Eigen::DenseIndex, 2> data_indices(i, 0);
+                    out_flat[p].slice(out_indices, sizes) =
+                        data_flat.slice(data_indices, sizes);
+                    output_index[p]++;
+                }
+            }
+            counter.DecrementCount();
+        };
+        thread::ThreadPool* device_threadpool =
+              ctx->device()->tensorflow_cpu_worker_threads()->workers;
+        device_threadpool->Schedule(do_ids_copying);
+
         gtl::InlinedVector<int, 32> output_index(num_partitions_);
 
-        if (partitions.dims() == data->dims()) {
+        if (partitions.dims() == indices->dims()) {
             // Walk through data and copy the data to the appropriate output tensor
-            const auto data_flat = data->flat<TKey>();
-            std::vector<Eigen::TensorMap<Eigen::Tensor<TKey, 1, Eigen::RowMajor>,
+            const auto indices_flat = indices->flat<int32>();
+            std::vector<Eigen::TensorMap<Eigen::Tensor<int32, 1, Eigen::RowMajor>,
                                         Eigen::Aligned> >
                 out_vec;
             out_vec.reserve(num_partitions_);
             for (int p = 0; p < num_partitions_; p++) {
-                out_vec.push_back(data_output[p]->vec<TKey>());
+                out_vec.push_back(indices_output[p]->vec<int32>());
             }
             for (int64 i = 0; i < N; i++) {
                 const int32 p = internal::SubtleMustCopy(e_partitions(i));
@@ -96,22 +159,22 @@ class ElasticPartitionOp : public OpKernel {
                             errors::InvalidArgument(
                                 "out_vec[", p, "] size: ", out_vec[p].size(),
                                 " is not LTE output_index[", p, "] : ", oi));
-                out_vec[p](oi) = data_flat(i);
+                out_vec[p](oi) = indices_flat(i);
                 output_index[p]++;
             }
         } else {
             // If data has extra dimensions, use Eigen slices
-            std::vector<Eigen::TensorMap<Eigen::Tensor<TKey, 2, Eigen::RowMajor>,
+            std::vector<Eigen::TensorMap<Eigen::Tensor<int32, 2, Eigen::RowMajor>,
                                         Eigen::Aligned> >
                 out_flat;
             out_flat.reserve(num_partitions_);
             for (int p = 0; p < num_partitions_; p++) {
-                out_flat.push_back(data_output[p]->flat_outer_dims<TKey>());
+                out_flat.push_back(indices_output[p]->flat_outer_dims<int32>());
             }
 
             // Walk through data and copy the data to the appropriate output tensor
-            const int64 slice_size = data->NumElements() / N;
-            const auto data_flat = data->shaped<TKey, 2>({N, slice_size});
+            const int64 slice_size = indices->NumElements() / N;
+            const auto data_flat = indices->shaped<int32, 2>({N, slice_size});
             Eigen::DSizes<Eigen::DenseIndex, 2> sizes(1, slice_size);
             for (int64 i = 0; i < N; i++) {
                 // outputs[p][output_index[p]++] = data[i]
@@ -174,11 +237,15 @@ class ElasticPartitionOp : public OpKernel {
     }
     
     void CalculateModulo(const int64* data, int nums, int32* partitions) {
-      
+      for (int i = 0; i < nums; ++i) {
+        partitions[i] = data[i] % num_partitions_;
+      }
     }
 
     void CalculateModulo(const int32* data, int nums, int32* partitions) {
-        
+      for (int i = 0; i < nums; ++i) {
+        partitions[i] = data[i] % num_partitions_;
+      }
     }
 
 
