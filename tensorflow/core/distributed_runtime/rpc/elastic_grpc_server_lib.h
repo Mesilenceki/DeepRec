@@ -130,6 +130,7 @@ class ElasticGrpcServer : public ServerInterface {
  private:
   // The overall server configuration. (it may be changed during scaling)
   ServerDef server_def_;
+  
   Env* env_;
   GrpcServerOptions opts_;
 

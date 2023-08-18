@@ -52,6 +52,7 @@ limitations under the License.
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/mem.h"
 #include "tensorflow/core/public/session_options.h"
+#include "tensorflow/core/protobuf/cluster.pb.h"
 
 namespace tensorflow {
 
@@ -152,20 +153,41 @@ int ElasticGrpcServer::UpdateServerDef() {
       LOG(ERROR) << "PARSE TF_CONFIG ERROR";
       return -1;
     }
-    if ((!tf_config_json["cluster"].isNull()) ||
-        (!tf_config_json["cluster"]["ps"].isNull())) {
+    if ((tf_config_json["cluster"].isNull()) ||
+        (tf_config_json["cluster"]["ps"].isNull())) {
       LOG(ERROR) << "PARSE ps ERROR";
       return -1;
     }
-
+    Json::Value ps_addr("localhost:10088");
+    tf_config_json["cluster"]["ps"].append(ps_addr);
     Json::Value ps_array = tf_config_json["cluster"]["ps"];
     int partition_nums = ps_array.size();
-
-    for (const auto& job : server_def_.cluster().job()) {
-      if (job.name() == "ps") {
-
+    int job_size = server_def_.cluster().job_size();
+    LOG(INFO) << "JUNQI ===============>" << partition_nums;
+    for (int j= 0;j < job_size; ++j) {
+      auto* job = server_def_.mutable_cluster()->mutable_job(j);
+      if (job->name() == "ps") {
+        int ori_partition_nums = job->tasks_size();
+        if (ori_partition_nums == partition_nums) return -1;
+        if (ori_partition_nums < partition_nums) {
+          for (int i = ori_partition_nums; i < partition_nums; ++i) {
+            Json::Value ps_string = ps_array[i];
+            if (ps_string.isString()) {
+              job->mutable_tasks()->insert({i, ps_string.asString()});
+            }
+          }
+        } else {
+          for (int i = partition_nums; partition_nums < ori_partition_nums; ++i) {
+            job->mutable_tasks()->erase(i);
+          }
+        }
+        break;
       }
     }
+    Json::FastWriter writer;
+    std::string new_tf_config = writer.write(tf_config_json);
+    LOG(INFO) << "new TF_CONFIG " << new_tf_config;
+    setenv("TF_CONFIG", new_tf_config.c_str(), 1);
     return partition_nums;
   }
   return -1;
@@ -174,16 +196,14 @@ int ElasticGrpcServer::UpdateServerDef() {
 Status ElasticGrpcServer::Update() {
   int ret = UpdateServerDef();
   if (ret == -1) return Status::OK();
-
-  mutex_lock l(mu_);
-
   
   WorkerCacheInterface* worker_cache;
+  LOG(INFO) << "JUNQI ===============>";
   WorkerCacheFactoryOptions worker_cache_factory_options(server_def_);
   TF_RETURN_IF_ERROR(
       WorkerCacheFactory(worker_cache_factory_options, &worker_cache));
   CHECK_NE(nullptr, worker_cache);
-
+  LOG(INFO) << "JUNQI ===============>";
   ConfigProto config = server_def_.default_session_config();
   string unused;
   string default_worker_name;
@@ -257,6 +277,8 @@ Status ElasticGrpcServer::Init(const GrpcServerOptions& opts) {
   ConfigProto config = server_def_.default_session_config();
   sess_opts.config = config;
 
+  LOG(INFO) << "JUNQI ===============>" << server_def_.has_cluster();
+  int job_size = server_def_.cluster().job_size();
   // Configure shared devices between master and worker.
   string name_prefix =
       strings::StrCat("/job:", server_def_.job_name(), "/replica:0",
@@ -587,7 +609,7 @@ Status ElasticGrpcServer::Create(const ServerDef& server_def, Env* env,
 
 namespace {
 
-class GrpcServerFactory : public ServerFactory {
+class ElasticGrpcServerFactory : public ServerFactory {
  public:
   bool AcceptsOptions(const ServerDef& server_def) override {
     return server_def.protocol() == "elastic-grpc";
@@ -600,19 +622,19 @@ class GrpcServerFactory : public ServerFactory {
 };
 
 // Registers a `ServerFactory` for `ElasticGrpcServer` instances.
-class GrpcServerRegistrar {
+class ElasticGrpcServerRegistrar {
  public:
-  GrpcServerRegistrar() {
+  ElasticGrpcServerRegistrar() {
     gpr_allocation_functions alloc_fns;
     memset(&alloc_fns, 0, sizeof(alloc_fns));
     alloc_fns.malloc_fn = port::Malloc;
     alloc_fns.realloc_fn = port::Realloc;
     alloc_fns.free_fn = port::Free;
     gpr_set_allocation_functions(alloc_fns);
-    ServerFactory::Register("ELASTIC_GRPC_SERVER", new GrpcServerFactory());
+    ServerFactory::Register("ELASTIC_GRPC_SERVER", new ElasticGrpcServerFactory());
   }
 };
-static GrpcServerRegistrar registrar;
+static ElasticGrpcServerRegistrar registrar;
 
 }  // namespace
 }  // namespace tensorflow

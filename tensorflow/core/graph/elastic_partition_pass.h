@@ -38,6 +38,10 @@ class ElasticTrainingPass : public GraphOptimizationPass {
     Status ScalingUpBackWardGraph(Graph* g,
                                   std::vector<Node*>& ev_node_vec,
                                   int ev_partition_num);
+                                  
+    Status ScalingDownBackWardGraph(Graph* g,
+                                  std::vector<Node*>& ev_node_vec,
+                                  int ev_partition_num);
 
               
   private:

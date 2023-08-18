@@ -29,6 +29,8 @@ import time
 import numpy as np
 import six
 import types
+from collections import defaultdict
+from tensorflow.python.ops import gen_kv_variable_ops
 
 from tensorflow.core.framework.summary_pb2 import Summary
 from tensorflow.core.protobuf import config_pb2
@@ -351,22 +353,31 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       
   def after_run(self, run_context, run_value):
     if self._count % 500 == 0:
-      channel = grpc.insecure_channel(ai_master_addr)
-      CheckElasticRequest req
-      req.global_step = global_step
-      req.task_index = self._task_index
-      _stub = check_elastic_service_pb2_grpc.ElasticTrainingServiceStub(channel)
-      run_context.session.close()
+      import grpc
+      from tensorflow.python.training import elastic_training_pb2_grpc
+      from tensorflow.python.training import elastic_training_pb2
+      channel = grpc.insecure_channel(self._aimaster_addr)
+      req = elastic_training_pb2.CheckElasticRequest()
+      req.task_index = int(self._task_index)
+      _stub = elastic_training_pb2_grpc.ElasticTrainingServiceStub(channel)
       #inform aimaster to restart server
-      # if self._task_index == 0:
-      #     pass
-      run_context.session.create()
-      if self._task_index == 0:
-        graph = ops.get_default_graph()
-        dataset_init = graph.get_operation_by_name("make_initializer")
-        run_context.session.run(self.op_list)
-        run_context.session.run([dataset_init])
-      self._count = 1
+      try:
+        resp = _stub.IsReadyScaling(req)
+        if resp.do_scaling:
+          run_context.session.close()
+          _req = elastic_training_pb2.UpdateServerDefRequest()
+          _stub.UpdateServerDef(_req)
+          run_context.session.create()
+          if self._task_index == 0:
+            print(" =============== ")
+            graph = ops.get_default_graph()
+            dataset_init = graph.get_operation_by_name("make_initializer")
+            run_context.session.run(self.op_list)
+            run_context.session.run([dataset_init])
+      except Exception as e:
+        logging.error(e)
+      finally:
+        self._count = 1
     else:
       self._count+=1
 

@@ -555,7 +555,7 @@ class BaseSaverBuilder(object):
         device_name = pydev.canonical_name(spec.tensor.device)
         device_idx = device_name.find("/device")
         if device_idx != -1:
-          canonical_device.add(device_name[:idx])
+          canonical_device.add(device_name[:device_idx])
         else:
           canonical_device.add(device_name)
       if len(canonical_device) != 1:

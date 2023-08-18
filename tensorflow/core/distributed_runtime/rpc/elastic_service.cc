@@ -47,7 +47,7 @@ class GrpcElasticService : public AsyncServiceInterface {
   }
 
   void HandleRPCsLoop() override {
-    new CallData(&elastic_service_, cq_.get());
+    new CallData(&elastic_service_, elastic_grpc_server_, cq_.get());
     void* tag;
     bool ok;
     while (true) {
@@ -69,8 +69,10 @@ class GrpcElasticService : public AsyncServiceInterface {
     // Take in the "service" instance (in this case representing an asynchronous
     // server) and the completion queue "cq" used for asynchronous communication
     // with the gRPC runtime.
-    CallData(ElasticTrainingService::AsyncService* service, ServerCompletionQueue* cq)
-        : service_(service), cq_(cq), responder_(&ctx_), status_(CREATE) {
+    CallData(ElasticTrainingService::AsyncService* service, ElasticGrpcServer* elastic_grpc_server,
+        ServerCompletionQueue* cq)
+      : service_(service), elastic_grpc_server_(elastic_grpc_server),
+        cq_(cq), responder_(&ctx_), status_(CREATE) {
       // Invoke the serving logic right away.
       Proceed();
     }
@@ -91,9 +93,10 @@ class GrpcElasticService : public AsyncServiceInterface {
         // Spawn a new CallData instance to serve new clients while we process
         // the one for this CallData. The instance will deallocate itself as
         // part of its FINISH state.
-        new CallData(service_, cq_);
+        new CallData(service_, elastic_grpc_server_, cq_);
 
         // The actual processing.
+        LOG(INFO) << "Processing Request";
         elastic_grpc_server_->Update();
         // std::string prefix("Hello ");
         // reply_.set_message(prefix + request_.name());
