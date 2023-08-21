@@ -114,6 +114,10 @@ class ElasticGrpcServer : public ServerInterface {
   // Creates a WorkerCacheInterface for a session.
   virtual Status WorkerCacheFactory(const WorkerCacheFactoryOptions& options,
                                     WorkerCacheInterface** worker_cache);
+  
+  // Creates a WorkerCacheInterface for a session.
+  Status UpdateWorkerCacheFactory(const WorkerCacheFactoryOptions& options,
+                                    WorkerCacheInterface** worker_cache);
 
   // Parses a WorkerCacheFactoryOptions into a GrpcChannelSpec.
   Status ParseChannelSpec(const WorkerCacheFactoryOptions& options,

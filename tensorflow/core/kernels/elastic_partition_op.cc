@@ -190,6 +190,7 @@ class ElasticPartitionOp : public OpKernel {
                 output_index[p]++;
             }
         }
+        counter.Wait();
     }
 
     void ValidateAndAllocateOutputs(OpKernelContext* c, const Tensor** data,
@@ -227,12 +228,14 @@ class ElasticPartitionOp : public OpKernel {
         for (int p = 0; p < num_partitions_; p++) {
             TensorShape shape;
             shape.AddDim(partition_count[p]);
+            Tensor* id_out;
+            OP_REQUIRES_OK(c, Tindices->allocate(p, shape, &id_out));
             for (int i = 1; i < (*data)->dims(); i++) {
                 shape.AddDim((*data)->dim_size(i));
             }
             Tensor* out;
             OP_REQUIRES_OK(c, Tdata->allocate(p, shape, &out));
-            OP_REQUIRES_OK(c, Tindices->allocate(p, shape, &out));
+            
         }
     }
     

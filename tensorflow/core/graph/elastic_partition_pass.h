@@ -15,23 +15,26 @@ class ElasticTrainingPass : public GraphOptimizationPass {
     Status RewriteElasticPartitionGraph(Graph* g, std::vector<Node*>& ev_node_vec);
     Status InitEVMeta(Graph* g,
                       std::unordered_map<std::string, Node* >& ev_nodes_map,
-                      std::unordered_map<std::string, std::pair<bool, int>>& ev_metas_map,
+                      std::unordered_map<std::string, int>& primary_ev_metas_map,
+                                        std::unordered_map<std::string, int>& opt_ev_metas_map,
                       std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map);
     
     Status InitNewPartitionSubGraph(Graph* g,
-                                    std::unordered_map<std::string, std::pair<bool, int>>& ev_metas_map,
+                                    std::unordered_map<std::string, int>& primary_ev_metas_map,
+                                    std::unordered_map<std::string, int>& opt_ev_metas_map,
                                     std::unordered_map<std::string, Node*>& ev_nodes_map,
                                     std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map,
                                     bool is_test);
     Status ScalingUpRedistributionGraph(Graph* g,
-                                      std::vector<Node*>& new_ev_node_vec, int ev_partition_num);
+                                      std::vector<Node*>& new_ev_node_vec, int ev_partition_num, bool is_primary);
     
     Status ScalingDownRedistributionGraph(Graph* g,
                                       std::vector<Node*>& new_ev_node_vec, int ev_partition_num);
 
     Status UpdatePartitionNums();
     Status InitNewSaveSubGraph(Graph* g,
-                                std::unordered_map<std::string, std::pair<bool, int>>& ev_metas_map,
+                                std::unordered_map<std::string, int>& primary_ev_metas_map,
+                                        std::unordered_map<std::string, int>& opt_ev_metas_map,
                                 std::unordered_map<std::string, Node*>& ev_nodes_map,
                                 std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map);
     

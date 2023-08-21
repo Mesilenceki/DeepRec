@@ -341,7 +341,8 @@ def create(self):
 @tf_export(v1=["train.ElasticTrainingHook"])
 class ElasticTrainingHook(session_run_hook.SessionRunHook):
   def __init__(self):
-    self._task_index = os.environ.get('TASK_INDEX', 0)
+    import json
+    self._task_index = json.loads(os.environ.get('TF_CONFIG', ""))["task"]["type"]
     self._aimaster_addr = os.environ.get("AIMASTER_ADDR", "")
     self._count = 1
 
@@ -358,7 +359,8 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       from tensorflow.python.training import elastic_training_pb2
       channel = grpc.insecure_channel(self._aimaster_addr)
       req = elastic_training_pb2.CheckElasticRequest()
-      req.task_index = int(self._task_index)
+      task_id = 0 if self._task_index == "chief" else 1
+      req.task_index = task_id
       _stub = elastic_training_pb2_grpc.ElasticTrainingServiceStub(channel)
       #inform aimaster to restart server
       try:
@@ -367,13 +369,15 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
           run_context.session.close()
           _req = elastic_training_pb2.UpdateServerDefRequest()
           _stub.UpdateServerDef(_req)
+          print(" ----------------- ")
           run_context.session.create()
-          if self._task_index == 0:
+          if self._task_index == "chief":
             print(" =============== ")
             graph = ops.get_default_graph()
             dataset_init = graph.get_operation_by_name("make_initializer")
             run_context.session.run(self.op_list)
             run_context.session.run([dataset_init])
+            print(" +++++++++++++++ ")
       except Exception as e:
         logging.error(e)
       finally:

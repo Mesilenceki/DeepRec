@@ -196,14 +196,19 @@ int ElasticGrpcServer::UpdateServerDef() {
 Status ElasticGrpcServer::Update() {
   int ret = UpdateServerDef();
   if (ret == -1) return Status::OK();
-  
+
+  auto devices_0 = worker_env_.device_mgr->ListDevices();
+  for (auto* dev: devices_0) {
+    LOG(INFO) << "JUNQI ===============>" << dev->resource_manager()->DebugString();
+  }
+
   WorkerCacheInterface* worker_cache;
   LOG(INFO) << "JUNQI ===============>";
   WorkerCacheFactoryOptions worker_cache_factory_options(server_def_);
   TF_RETURN_IF_ERROR(
-      WorkerCacheFactory(worker_cache_factory_options, &worker_cache));
+      UpdateWorkerCacheFactory(worker_cache_factory_options, &worker_cache));
   CHECK_NE(nullptr, worker_cache);
-  LOG(INFO) << "JUNQI ===============>";
+
   ConfigProto config = server_def_.default_session_config();
   string unused;
   string default_worker_name;
@@ -234,9 +239,9 @@ Status ElasticGrpcServer::Update() {
         WorkerCacheFactoryOptions options(server_def);
         return WorkerCacheFactory(options, worker_cache);
       });
-
-  // Finish setting up master environment.
   master_env_.worker_cache = worker_cache;
+  // Finish setting up master environment.
+  
   StatsPublisherFactory stats_factory = opts_.stats_factory;
   master_env_.master_session_factory =
       [config, stats_factory](
@@ -256,7 +261,10 @@ Status ElasticGrpcServer::Update() {
              WorkerCacheInterface** worker_cache) {
         return WorkerCacheFactory(options, worker_cache);
       };
-
+  auto devices = worker_env_.device_mgr->ListDevices();
+  for (auto* dev: devices) {
+    LOG(INFO) << "JUNQI ===============>" << dev->resource_manager()->DebugString();
+  }
   return Status::OK();
 }
 
@@ -277,8 +285,6 @@ Status ElasticGrpcServer::Init(const GrpcServerOptions& opts) {
   ConfigProto config = server_def_.default_session_config();
   sess_opts.config = config;
 
-  LOG(INFO) << "JUNQI ===============>" << server_def_.has_cluster();
-  int job_size = server_def_.cluster().job_size();
   // Configure shared devices between master and worker.
   string name_prefix =
       strings::StrCat("/job:", server_def_.job_name(), "/replica:0",
@@ -480,6 +486,54 @@ Status ElasticGrpcServer::WorkerCacheFactory(const WorkerCacheFactoryOptions& op
   return Status::OK();
 }
 
+Status ElasticGrpcServer::UpdateWorkerCacheFactory(const WorkerCacheFactoryOptions& options,
+                                      WorkerCacheInterface** worker_cache) {
+  if (options.job_name == nullptr || options.job_name->empty()) {
+    Status s = errors::InvalidArgument(
+        "The master (current machine) is not included in the provided "
+        "cluster_def. ",
+        options.cluster_def->DebugString());
+    LOG(WARNING) << s;
+    return s;
+  }
+
+  GrpcChannelSpec channel_spec;
+  TF_RETURN_IF_ERROR(ParseChannelSpec(options, &channel_spec));
+
+  std::shared_ptr<GrpcChannelCache> channel_cache(
+      NewGrpcChannelCache(channel_spec, GetChannelCreationFunction()));
+
+  string name_prefix = strings::StrCat("/job:", *options.job_name, "/replica:0",
+                                       "/task:", options.task_index);
+
+  const string host_port = channel_cache->TranslateTask(name_prefix);
+  int requested_port;
+
+  auto colon_index = host_port.find_last_of(':');
+  if (!strings::safe_strto32(host_port.substr(colon_index + 1),
+                             &requested_port)) {
+    return errors::Internal("Could not parse port for local server from \"",
+                            host_port, "\".");
+  }
+
+  if (requested_port != bound_port_) {
+    return errors::InvalidArgument("Requested port ", requested_port,
+                                   " differs from expected port ", bound_port_);
+  }
+
+  *worker_cache = NewGrpcWorkerCacheWithLocalWorker(channel_cache,
+                                                    worker_impl(), name_prefix);
+
+  for (auto device : master_env_.local_devices) {
+    ResourceMgr *rm = device->resource_manager();
+    WorkerResource *worker_resource;
+    TF_RETURN_IF_ERROR(rm->Lookup("worker_resource", "worker_resource", &worker_resource));
+    worker_resource->worker_cache = *worker_cache;
+  }
+
+  return Status::OK();
+}
+
 Status ElasticGrpcServer::Start() {
   mutex_lock l(mu_);
   switch (state_) {
@@ -507,7 +561,6 @@ Status ElasticGrpcServer::Start() {
       return errors::FailedPrecondition("Server has stopped.");
     default:
       LOG(FATAL);
-      return errors::FailedPrecondition("Default Behaviours");
   }
 }
 
@@ -532,7 +585,6 @@ Status ElasticGrpcServer::Stop() {
       return Status::OK();
     default:
       LOG(FATAL);
-      return errors::Unimplemented("default behaviour");
   }
 }
 
@@ -551,7 +603,6 @@ Status ElasticGrpcServer::Join() {
       return Status::OK();
     default:
       LOG(FATAL);
-      return Status::OK();
   }
 }
 

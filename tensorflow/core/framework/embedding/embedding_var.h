@@ -622,8 +622,8 @@ class EmbeddingVar : public ResourceBase {
       if (val != nullptr && primary_val != nullptr) {
         memcpy(value_list + i * value_len_, val, sizeof(V) * value_len_);
       } else if (val == nullptr && primary_val != nullptr) {
-        // only forward, no backward
-        // value_list->emplace_back(reinterpret_cast<V*>(-1));
+        V* default_v = GetDefaultValue(filtered_keys_list[i]);
+        memcpy(value_list + i * value_len_, default_v, sizeof(V) * value_len_);
       } else {
         // feature filtered
         // value_list->emplace_back(nullptr);
@@ -637,7 +637,8 @@ class EmbeddingVar : public ResourceBase {
                        const Eigen::GpuDevice* device = nullptr) {
     RestoreBuffer restore_buff((char*)key_list, (char*)value_list,
                                 (char*)version_list, (char*)freq_list);
-
+    LOG(INFO) << key_num << " === " << value_len_ << " === "<< partition_num << " === " << is_initialized_
+              << " === " << name_;
     return storage_->RestoreFeatures(key_num, 1000, partition_id, partition_num,
                                       value_len_, false, false, emb_config_, device,
                                       filter_, restore_buff);

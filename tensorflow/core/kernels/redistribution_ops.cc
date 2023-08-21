@@ -128,7 +128,7 @@ class ImportStorageOp : public OpKernel {
       auto* import_versions = import_versions_tensor.flat<int64>().data();
       const Tensor& import_freqs_tensor = ctx->input(1+partition_nums_*3+i);
       auto* import_freqs = import_freqs_tensor.flat<int64>().data();    
-      OP_REQUIRES_OK(ctx, embedding_var->ImportStorage(N, partition_id_, partition_nums_, 
+      OP_REQUIRES_OK(ctx, embedding_var->ImportStorage(N, partition_id_, (partition_nums_+1), 
                                    import_ids, import_values, import_versions,
                                    import_freqs));
     }
