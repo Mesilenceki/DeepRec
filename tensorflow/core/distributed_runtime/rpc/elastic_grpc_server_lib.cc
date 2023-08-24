@@ -203,7 +203,6 @@ Status ElasticGrpcServer::Update() {
   }
 
   WorkerCacheInterface* worker_cache;
-  LOG(INFO) << "JUNQI ===============>";
   WorkerCacheFactoryOptions worker_cache_factory_options(server_def_);
   TF_RETURN_IF_ERROR(
       UpdateWorkerCacheFactory(worker_cache_factory_options, &worker_cache));
@@ -261,10 +260,10 @@ Status ElasticGrpcServer::Update() {
              WorkerCacheInterface** worker_cache) {
         return WorkerCacheFactory(options, worker_cache);
       };
-  auto devices = worker_env_.device_mgr->ListDevices();
-  for (auto* dev: devices) {
-    LOG(INFO) << "JUNQI ===============>" << dev->resource_manager()->DebugString();
-  }
+  // auto devices = worker_env_.device_mgr->ListDevices();
+  // for (auto* dev: devices) {
+  //   LOG(INFO) << "JUNQI ===============>" << dev->resource_manager()->DebugString();
+  // }
   return Status::OK();
 }
 

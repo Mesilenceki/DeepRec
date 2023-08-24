@@ -302,6 +302,12 @@ class KvResourceGatherOp : public OpKernel {
           ev->UpdateCache(indices, true);
         }
       }
+      for (int i = 0; i < N; ++i) {
+        LOG(INFO) << indices.flat<TKey>().data()[i] << " <-----";
+        for (int j = 0; j < ev->ValueLen(); ++j) {
+          LOG(INFO) << out_base[j] << " <++++++++";
+        }
+      }
     }
   }
 

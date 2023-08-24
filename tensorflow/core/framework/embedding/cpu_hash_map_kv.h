@@ -123,9 +123,9 @@ class LocklessHashMap : public KVInterface<K, V> {
       if (hash_map_dump[j].first != LocklessHashMap<K, V>::EMPTY_KEY_ 
            && hash_map_dump[j].first != LocklessHashMap<K, V>::DELETED_KEY_
            && hash_map_dump[j].first % partition_nums != partition_id) {
-        hash_map_.erase_lockless(hash_map_dump[j].first);
         key_list->emplace_back(hash_map_dump[j].first);
         value_ptr_list->emplace_back(hash_map_dump[j].second);
+        hash_map_.erase_lockless(hash_map_dump[j].first);
       }
     }
     free(hash_map_dump);

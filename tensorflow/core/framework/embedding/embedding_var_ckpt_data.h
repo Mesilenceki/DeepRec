@@ -50,6 +50,9 @@ class  EmbeddingVarCkptData {
       } else {
         V* val = value_ptr->GetValue(emb_config.emb_index,
             value_offset);
+        // if (val == nullptr) {
+        //   LOG(INFO) << "value is nullptr" << key;
+        // }
         value_ptr_vec_.emplace_back(val);
       }
 
@@ -66,6 +69,8 @@ class  EmbeddingVarCkptData {
     } else {
       if (!save_unfiltered_features)
         return;
+
+      // value_ptr_vec_.emplace_back();
 
       key_filter_vec_.emplace_back(key);
 
@@ -134,15 +139,19 @@ class  EmbeddingVarCkptData {
                       ValueIterator<V>* value_iter = nullptr) {
     size_t bytes_limit = 8 << 20;
     std::unique_ptr<char[]> dump_buffer(new char[bytes_limit]);
+    LOG(INFO) << "CALLING ExportToCkpt ===> " << tensor_name
+              << " ==== " << key_vec_.size() << " === " << value_ptr_vec_.size()
+              << " ==== " << version_vec_.size() << " === " << freq_vec_.size();
 
     EVVectorDataDumpIterator<K> key_dump_iter(key_vec_);
+    LOG(INFO) << "CALLING keys";
     Status s = SaveTensorWithFixedBuffer(
         tensor_name + "-keys", writer, dump_buffer.get(),
         bytes_limit, &key_dump_iter,
         TensorShape({key_vec_.size()}));
     if (!s.ok())
       return s;
-
+    LOG(INFO) << "CALLING values";
     EV2dVectorDataDumpIterator<V> value_dump_iter(
         value_ptr_vec_, value_len, value_iter);
     s = SaveTensorWithFixedBuffer(
@@ -151,7 +160,7 @@ class  EmbeddingVarCkptData {
         TensorShape({value_ptr_vec_.size(), value_len}));
     if (!s.ok())
       return s;
-
+    LOG(INFO) << "CALLING versions";
     EVVectorDataDumpIterator<int64> version_dump_iter(version_vec_);
     s = SaveTensorWithFixedBuffer(
         tensor_name + "-versions", writer, dump_buffer.get(),
@@ -159,7 +168,7 @@ class  EmbeddingVarCkptData {
         TensorShape({version_vec_.size()}));
     if (!s.ok())
       return s;
-
+    LOG(INFO) << "CALLING freqs";
     EVVectorDataDumpIterator<int64> freq_dump_iter(freq_vec_);
     s = SaveTensorWithFixedBuffer(
         tensor_name + "-freqs", writer, dump_buffer.get(),
@@ -167,7 +176,7 @@ class  EmbeddingVarCkptData {
         TensorShape({freq_vec_.size()}));
     if (!s.ok())
       return s;
-
+    LOG(INFO) << "CALLING keys_filtered";
     EVVectorDataDumpIterator<K> filtered_key_dump_iter(key_filter_vec_);
     s = SaveTensorWithFixedBuffer(
         tensor_name + "-keys_filtered", writer, dump_buffer.get(),
@@ -175,7 +184,7 @@ class  EmbeddingVarCkptData {
         TensorShape({key_filter_vec_.size()}));
     if (!s.ok())
       return s;
-
+    LOG(INFO) << "CALLING versions_filtered";
     EVVectorDataDumpIterator<int64>
         filtered_version_dump_iter(version_filter_vec_);
     s = SaveTensorWithFixedBuffer(
@@ -185,7 +194,7 @@ class  EmbeddingVarCkptData {
         TensorShape({version_filter_vec_.size()}));
     if (!s.ok())
       return s;
-
+    LOG(INFO) << "CALLING freqs_filtered";
     EVVectorDataDumpIterator<int64>
         filtered_freq_dump_iter(freq_filter_vec_);
     s = SaveTensorWithFixedBuffer(
@@ -195,7 +204,7 @@ class  EmbeddingVarCkptData {
         TensorShape({freq_filter_vec_.size()}));
     if (!s.ok())
       return s;
-
+    LOG(INFO) << "CALLING partition_offset";
     EVVectorDataDumpIterator<int32>
         part_offset_dump_iter(part_offset_);
     s = SaveTensorWithFixedBuffer(
@@ -205,7 +214,7 @@ class  EmbeddingVarCkptData {
         TensorShape({part_offset_.size()}));
     if (!s.ok())
       return s;
-
+    LOG(INFO) << "CALLING partition_filter_offset";
     EVVectorDataDumpIterator<int32>
         part_filter_offset_dump_iter(part_filter_offset_);
     s = SaveTensorWithFixedBuffer(

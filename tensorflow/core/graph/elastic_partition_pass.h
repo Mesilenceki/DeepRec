@@ -12,17 +12,15 @@ class ElasticTrainingPass : public GraphOptimizationPass {
     Status Run(const GraphOptimizationPassOptions& options) override;
 
     Status RewriteTrainingGraph(Graph* g, bool is_test = false);
-    Status RewriteElasticPartitionGraph(Graph* g, std::vector<Node*>& ev_node_vec);
+    Status RewriteElasticPartitionGraph(Graph* g, std::vector<Node*>& ev_node_vec, Node** elastic_node, Node** p_dynamic_stitch_node);
     Status InitEVMeta(Graph* g,
-                      std::unordered_map<std::string, Node* >& ev_nodes_map,
                       std::unordered_map<std::string, int>& primary_ev_metas_map,
-                                        std::unordered_map<std::string, int>& opt_ev_metas_map,
-                      std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map);
+                                      std::unordered_map<std::string, std::vector<std::string>>& primary_ev_to_opt_map,
+                                      std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map);
     
-    Status InitNewPartitionSubGraph(Graph* g,
-                                    std::unordered_map<std::string, int>& primary_ev_metas_map,
-                                    std::unordered_map<std::string, int>& opt_ev_metas_map,
-                                    std::unordered_map<std::string, Node*>& ev_nodes_map,
+    Status RewriteTrainingSubGraph(Graph* g,
+                                   std::unordered_map<std::string, int>& primary_ev_metas_map,
+                                    std::unordered_map<std::string, std::vector<std::string>>& primary_ev_to_opt_map,
                                     std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map,
                                     bool is_test);
     Status ScalingUpRedistributionGraph(Graph* g,
@@ -32,20 +30,18 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                       std::vector<Node*>& new_ev_node_vec, int ev_partition_num);
 
     Status UpdatePartitionNums();
-    Status InitNewSaveSubGraph(Graph* g,
+    Status RewriteSavingSubGraph(Graph* g,
                                 std::unordered_map<std::string, int>& primary_ev_metas_map,
-                                        std::unordered_map<std::string, int>& opt_ev_metas_map,
-                                std::unordered_map<std::string, Node*>& ev_nodes_map,
+                                std::unordered_map<std::string, std::vector<std::string>>& primary_ev_to_opt_map,
                                 std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map);
     
     Status ScalingUpBackWardGraph(Graph* g,
-                                  std::vector<Node*>& ev_node_vec,
+                                  std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map,
+                                  const std::string& primary_ev_name,
+                                  const std::vector<std::string>& opt_ev_names,
+                                  Node* elastic_node, Node* p_dynamic_stitch_node,
+                                  std::vector<Node*>& no_op_vec,
                                   int ev_partition_num);
-                                  
-    Status ScalingDownBackWardGraph(Graph* g,
-                                  std::vector<Node*>& ev_node_vec,
-                                  int ev_partition_num);
-
               
   private:
     int partition_nums_;

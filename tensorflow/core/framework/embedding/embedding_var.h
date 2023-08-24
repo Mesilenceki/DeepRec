@@ -89,6 +89,7 @@ class EmbeddingVar : public ResourceBase {
   }
 
   Status Init(const Tensor& default_tensor, int64 default_value_dim) {
+    LOG(INFO) << "EMBEDDINGVAR init ---> " << name_;
     if (storage_ == nullptr) {
       return errors::InvalidArgument(
           "Invalid ht_type to construct EmbeddingVar");
@@ -607,8 +608,10 @@ class EmbeddingVar : public ResourceBase {
       V* val = filtered_value_ptr_list[i]->GetValue(emb_config_.emb_index,
         storage_->GetOffset(emb_config_.emb_index));
       V* primary_val = filtered_value_ptr_list[i]->GetValue(
-          emb_config_.primary_emb_index,
-          storage_->GetOffset(emb_config_.primary_emb_index));
+          0, 0);
+      // V* primary_val = filtered_value_ptr_list[i]->GetValue(
+      //     emb_config_.primary_emb_index,
+      //     storage_->GetOffset(emb_config_.primary_emb_index));
       key_list[i] = filtered_keys_list[i];
       if (emb_config_.filter_freq != 0 || emb_config_.record_freq) {
         int64 dump_freq = filter_->GetFreq(
@@ -619,11 +622,12 @@ class EmbeddingVar : public ResourceBase {
         int64 dump_version = filtered_value_ptr_list[i]->GetStep();
         version_list[i] =dump_version;
       }
+
       if (val != nullptr && primary_val != nullptr) {
         memcpy(value_list + i * value_len_, val, sizeof(V) * value_len_);
-      } else if (val == nullptr && primary_val != nullptr) {
-        V* default_v = GetDefaultValue(filtered_keys_list[i]);
-        memcpy(value_list + i * value_len_, default_v, sizeof(V) * value_len_);
+      } else if (val != nullptr && primary_val == nullptr) {
+        LOG(INFO) << " key is : " << filtered_keys_list[i];
+        memcpy(value_list + i * value_len_, default_value_, sizeof(V) * value_len_);
       } else {
         // feature filtered
         // value_list->emplace_back(nullptr);
@@ -637,8 +641,6 @@ class EmbeddingVar : public ResourceBase {
                        const Eigen::GpuDevice* device = nullptr) {
     RestoreBuffer restore_buff((char*)key_list, (char*)value_list,
                                 (char*)version_list, (char*)freq_list);
-    LOG(INFO) << key_num << " === " << value_len_ << " === "<< partition_num << " === " << is_initialized_
-              << " === " << name_;
     return storage_->RestoreFeatures(key_num, 1000, partition_id, partition_num,
                                       value_len_, false, false, emb_config_, device,
                                       filter_, restore_buff);
@@ -773,12 +775,15 @@ class EmbeddingVar : public ResourceBase {
     return storage_->HashTable();
   }
 
+  string Name() {return name_; }
+  
  protected:
   FilterPolicy<K, V, EmbeddingVar<K, V>>* GetFilter() const {
     return filter_;
   }
 
   ~EmbeddingVar() override {
+    LOG(INFO) << "EMBEDDINGVAR deconstruct ---> " << name_;
     // When dynamic dimension embedding is used,
     // there will be more than one primary slot
     if (emb_config_.is_primary() && emb_config_.primary_emb_index == 0) {

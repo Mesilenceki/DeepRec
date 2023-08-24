@@ -127,7 +127,7 @@ TEST_F(ElasticPartitionOpTest, Simple_TwoD) {
     test::ExpectTensorEqual<int32>(expected_id, *GetOutput(5));
   }
   {  // Output 2
-    Tensor expected(allocator(), DT_INT64, TensorShape({3}));
+    Tensor expected(allocator(), DT_INT64, TensorShape({1, 3}));
     test::FillValues<int64>(&expected, {6, 7, 8});
     test::ExpectTensorEqual<int64>(expected, *GetOutput(2));
 
@@ -136,7 +136,7 @@ TEST_F(ElasticPartitionOpTest, Simple_TwoD) {
     test::ExpectTensorEqual<int32>(expected_id, *GetOutput(6));
   }
   {  // Output 3
-    Tensor expected(allocator(), DT_INT64, TensorShape({3}));
+    Tensor expected(allocator(), DT_INT64, TensorShape({1, 3}));
     test::FillValues<int64>(&expected, {9, 10, 11});
     test::ExpectTensorEqual<int64>(expected, *GetOutput(3));
 

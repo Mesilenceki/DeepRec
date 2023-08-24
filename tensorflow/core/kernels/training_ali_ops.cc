@@ -1400,12 +1400,15 @@ class KvSparseApplyAdamOp : public OpKernel {
   }
 
   void Compute(OpKernelContext* ctx) override NO_THREAD_SAFETY_ANALYSIS {
+  
     auto locks = MaybeLockEmbeddingVariableInputMutexesInOrder<Tindex, T>(ctx, use_exclusive_lock_,
                                                       {0, 1, 2});
     EmbeddingVar<Tindex, T>* var = nullptr;
     OP_REQUIRES_OK(ctx, GetInputEmbeddingVar(ctx, 0, &var));
     core::ScopedUnref unref_var(var);
 
+    LOG(INFO) << "KvSparseApplyAdamOp CALLING: " << var->Name();
+    
     EmbeddingVar<Tindex, T>* m = nullptr;
     OP_REQUIRES_OK(ctx, GetInputEmbeddingVar(ctx, 1, &m));
     core::ScopedUnref unref_m(m);

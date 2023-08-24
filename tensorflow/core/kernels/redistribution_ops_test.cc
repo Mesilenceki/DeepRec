@@ -27,6 +27,35 @@ limitations under the License.
 
 
 namespace tensorflow {
+
+namespace {
+  struct ProcMemory {
+    long size;      // total program size
+    long resident;  // resident set size
+    long share;     // shared pages
+    long trs;       // text (code)
+    long lrs;       // library
+    long drs;       // data/stack
+    long dt;        // dirty pages
+  };
+
+  static long read_proc_memory() {
+    ProcMemory m;
+    errno = 0;
+    FILE* fp = NULL;
+    fp = fopen("/proc/self/statm", "r");
+    if (NULL == fp) {
+        return -1;
+    }
+    if (fscanf(fp, "%ld %ld %ld %ld %ld %ld %ld",
+              &m.size, &m.resident, &m.share,
+              &m.trs, &m.lrs, &m.drs, &m.dt) != 7) {
+        return -1;
+    }
+    return m.resident * getpagesize()/1024.0/1024.0;
+  }
+
+}
 namespace embedding {
 
 class ReDistributionOpTest : public OpsTestBase {
@@ -79,7 +108,12 @@ TEST_F(ReDistributionOpTest, TestEVFilterStorage) {
 
   ASSERT_EQ(embedding_var->Size(), ev_size);
   AddResourceInput<EmbeddingVar<int64, float>>("", "EmbeddingVar", embedding_var);
+  auto proc_mem = read_proc_memory();
   TF_ASSERT_OK(RunOpKernel());
+  auto after_proc_mem = read_proc_memory();
+  LOG(INFO) << "before filter mem usage: " << proc_mem << " MB"
+            << " after filter mem usage: " << after_proc_mem << " MB";
+
   // Check the output sizes
   {  // Output 0
     std::vector<int64> unneeded_ids;
@@ -140,6 +174,7 @@ TEST_F(ReDistributionOpTest, TestEVFilterStorage) {
   }
 
   ASSERT_EQ(embedding_var->Size(), ev_size / 4);
+  
 }
 
 TEST_F(ReDistributionOpTest, TestEVImportStorage) {
@@ -180,7 +215,7 @@ TEST_F(ReDistributionOpTest, TestEVImportStorage) {
     values_vec.reserve(ev_size / 2 * value_size);
     for (int64 i = 0; i < ev_size; i+=2) {
         for (int j = 0; j < value_size; ++j) {
-            values_vec.push_back(5.0);
+            values_vec.push_back(i * 5.0);
         } 
     }
     Tensor values(DT_FLOAT, {ev_size / 2, value_size});
@@ -206,8 +241,42 @@ TEST_F(ReDistributionOpTest, TestEVImportStorage) {
     AddInputFromArray<int64>(freqs.shape(), freqs.flat<int64>());
   }
 
+  auto proc_mem = read_proc_memory();
   TF_ASSERT_OK(RunOpKernel());
+  auto after_proc_mem = read_proc_memory();
+  LOG(INFO) << "before import mem usage: " << proc_mem << " MB"
+            << " after import mem usage: " << after_proc_mem << " MB";
+
   ASSERT_EQ(embedding_var->Size(), ev_size);
+
+  for (int64 i = 0; i < ev_size; i+=2) {
+    float *val = (float *)malloc((value_size+1)*sizeof(float));
+    float *default_value = (float *)malloc((value_size)*sizeof(float));
+    for (int k = 0; k < value_size; k++) {
+      default_value[k] = 10.0;
+    }
+    embedding_var->Lookup(i, val, default_value);
+    ASSERT_EQ(val[0], i * 5.0);
+    int ret_version = embedding_var->GetVersion(i);
+    ASSERT_EQ(ret_version, -1);
+    // int ret_freq = embedding_var->GetFreq(i);
+    // ASSERT_EQ(ret_freq, 5);
+    free(val);
+    free(default_value);
+  }
+  
+  // for (int64 i = 1; i < ev_size; i+=2) {
+  //   float *val = (float *)malloc((value_size+1)*sizeof(float));
+  //   float *default_value = (float *)malloc((value_size)*sizeof(float));
+  //   for (int k = 0; k < value_size; k++) {
+  //     default_value[k] = 10.0;
+  //   }
+  //   embedding_var->Lookup(i, val, default_value);
+  //   ASSERT_EQ(val[0], 9.0);
+  //   free(val);
+  //   free(default_value);
+  // }
+
 }
 
 } // namespace embedding

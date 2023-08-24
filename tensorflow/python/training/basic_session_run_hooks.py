@@ -42,6 +42,7 @@ from tensorflow.python.framework import meta_graph
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import variable_scope
+from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.platform import gfile
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.training import incremental_saver
@@ -348,6 +349,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
 
   def begin(self):
     self.op_list = self._init_repartition_op()
+    self.init_op = [control_flow_ops.no_op("elastic_subgraph_init")]
 
   def after_create_session(self, session, coord):
     session.create = types.MethodType(create, session)
@@ -367,16 +369,26 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
         resp = _stub.IsReadyScaling(req)
         if resp.do_scaling:
           run_context.session.close()
-          _req = elastic_training_pb2.UpdateServerDefRequest()
-          _stub.UpdateServerDef(_req)
+          time.sleep(10)
+          if self._task_index == "chief":
+            _req = elastic_training_pb2.UpdateServerDefRequest()
+            _stub.UpdateServerDef(_req)
+          else:
+            time.sleep(5)
           print(" ----------------- ")
           run_context.session.create()
           if self._task_index == "chief":
             print(" =============== ")
             graph = ops.get_default_graph()
-            dataset_init = graph.get_operation_by_name("make_initializer")
+            
+            run_context.session.run(self.init_op)
             run_context.session.run(self.op_list)
-            run_context.session.run([dataset_init])
+            try:
+              dataset_init = graph.get_operation_by_name("make_initializer")
+              run_context.session.run([dataset_init])
+            except KeyError:
+              pass
+            
             print(" +++++++++++++++ ")
       except Exception as e:
         logging.error(e)
@@ -388,6 +400,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
   def _init_repartition_op(self):
     op_list = []
     ev_list = ops.get_collection(ops.GraphKeys.EMBEDDING_VARIABLES)
+    print(ev_list)
     import_storage_map = defaultdict(lambda: defaultdict(list))
     def process_ev_name(ev):
       ev_name = ev.name.split(":")[0]

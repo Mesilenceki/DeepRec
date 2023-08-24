@@ -409,6 +409,8 @@ class InitializeKvVariableOp : public OpKernel {
     if (steps_to_live_ != kEmbeddingVarUseDB) {
       ev->SetInitialized();
     }
+    LOG(INFO) << "Embedding Var initialized : " << handle_self.name() 
+              << " == " << handle_primary.name();
   }
 
  private:

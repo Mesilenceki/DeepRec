@@ -134,6 +134,7 @@ Status SaveTensorWithFixedBuffer(const string& tensor_name,
 
   while (dump_iter->HasNext()) {
     T key = dump_iter->Next();
+    // LOG(INFO) << " key " << " ==== " << key;
     if (bytes_written + sizeof(T) > bytes_limit) {
       dump_happened = true;
       writer->AppendSegmentData(dump_buffer, bytes_written);

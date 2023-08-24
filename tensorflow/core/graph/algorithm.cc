@@ -175,7 +175,82 @@ void ReverseDFSFromHelper(const Graph& g, gtl::ArraySlice<T> start,
   }
 }
 
+template <typename T>
+void ReverseDFSSubGraphHelper(const Graph& g, gtl::ArraySlice<T> start,
+                          const Node* end,
+                          const std::function<void(T)>& enter,
+                          const std::function<void(T)>& leave,
+                          const NodeComparator& stable_comparator) {
+  // Stack of work to do.
+  struct Work {
+    T node;
+    bool leave;  // Are we entering or leaving n?
+  };
+  std::vector<Work> stack(start.size());
+  for (int i = 0; i < start.size(); ++i) {
+    stack[i] = Work{start[i], false};
+  }
+
+  std::vector<bool> visited(g.num_node_ids(), false);
+  while (!stack.empty()) {
+    Work w = stack.back();
+    stack.pop_back();
+
+    T n = w.node;
+    if (w.leave) {
+      if (n->name() == end->name()) return;
+      leave(n);
+      continue;
+    }
+
+    if (visited[n->id()]) continue;
+    visited[n->id()] = true;
+    if (enter) enter(n);
+
+    // Arrange to call leave(n) when all done with descendants.
+    if (leave) stack.push_back(Work{n, true});
+
+    auto add_work = [&visited, &stack](T out) {
+      if (!visited[out->id()]) {
+        // Note; we must not mark as visited until we actually process it.
+        stack.push_back(Work{out, false});
+      }
+    };
+
+    if (stable_comparator) {
+      std::vector<T> nodes_sorted;
+      for (const Edge* in_edge : n->in_edges()) {
+        nodes_sorted.emplace_back(in_edge->src());
+      }
+      std::sort(nodes_sorted.begin(), nodes_sorted.end(), stable_comparator);
+      for (T in : nodes_sorted) {
+        add_work(in);
+      }
+    } else {
+      for (const Edge* in_edge : n->in_edges()) {
+        add_work(in_edge->src());
+      }
+    }
+  }
+}
+
 }  // namespace
+
+void ReverseDFSSubGraph(const Graph& g, gtl::ArraySlice<const Node*> start,
+                    const Node* end,
+                    const std::function<void(const Node*)>& enter,
+                    const std::function<void(const Node*)>& leave,
+                    const NodeComparator& stable_comparator) {
+  ReverseDFSSubGraphHelper(g, start, end, enter, leave, stable_comparator);
+}
+
+void ReverseDFSSubGraph(const Graph& g, gtl::ArraySlice<Node*> start,
+                    const Node* end,
+                    const std::function<void(Node*)>& enter,
+                    const std::function<void(Node*)>& leave,
+                    const NodeComparator& stable_comparator) {
+  ReverseDFSSubGraphHelper(g, start, end, enter, leave, stable_comparator);
+}
 
 void ReverseDFSFrom(const Graph& g, gtl::ArraySlice<const Node*> start,
                     const std::function<void(const Node*)>& enter,
