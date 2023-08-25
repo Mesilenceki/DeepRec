@@ -596,7 +596,8 @@ class EmbeddingVar : public ResourceBase {
   Status GetSnapshot(std::vector<K>* key_list,
       std::vector<ValuePtr<V>*>* value_ptr_list,
       int partition_id, int partition_num) {
-    return storage_->GetSnapshot(key_list, value_ptr_list, partition_id, partition_num);
+    return storage_->GetSnapshot(key_list, value_ptr_list, 
+                                 partition_id, partition_num, emb_config_.is_primary());
   }
 
   void FilterStorage(K* key_list, V* value_list,

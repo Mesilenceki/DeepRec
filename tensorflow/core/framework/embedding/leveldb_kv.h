@@ -197,7 +197,7 @@ class LevelDBKV : public KVInterface<K, V> {
 
   Status GetSnapshot(std::vector<K>* key_list,
       std::vector<ValuePtr<V>*>* value_ptr_list,
-      int partition_id, int partition_nums) override {
+      int partition_id, int partition_nums, bool is_primary) override {
     ReadOptions options;
     options.snapshot = db_->GetSnapshot();
     leveldb::Iterator* it = db_->NewIterator(options);

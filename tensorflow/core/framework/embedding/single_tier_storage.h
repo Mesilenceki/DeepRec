@@ -241,9 +241,9 @@ class SingleTierStorage : public Storage<K, V> {
 
   Status GetSnapshot(std::vector<K>* key_list,
       std::vector<ValuePtr<V>*>* value_ptr_list,
-      int partition_id, int partition_nums) override {
+      int partition_id, int partition_nums, bool is_primary) override {
     mutex_lock l(Storage<K, V>::mu_);
-    return kv_->GetSnapshot(key_list, value_ptr_list, partition_id, partition_nums);
+    return kv_->GetSnapshot(key_list, value_ptr_list, partition_id, partition_nums, is_primary);
   }
 
   Status Save(

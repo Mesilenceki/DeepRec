@@ -348,14 +348,17 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
     self._count = 1
 
   def begin(self):
-    self.op_list = self._init_repartition_op()
     self.init_op = [control_flow_ops.no_op("elastic_subgraph_init")]
+    self.op_list = self._init_repartition_op()
+    with ops.control_dependencies(self.op_list):
+      self.import_op = [control_flow_ops.no_op("elastic_subgraph_import")]
+      
 
   def after_create_session(self, session, coord):
     session.create = types.MethodType(create, session)
       
   def after_run(self, run_context, run_value):
-    if self._count % 500 == 0:
+    if self._count % 2000 == 0:
       import grpc
       from tensorflow.python.training import elastic_training_pb2_grpc
       from tensorflow.python.training import elastic_training_pb2
@@ -365,9 +368,46 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       req.task_index = task_id
       _stub = elastic_training_pb2_grpc.ElasticTrainingServiceStub(channel)
       #inform aimaster to restart server
+
+      # try:
+      #   #graph = ops.get_default_graph()
+
+      #   #global_step = run_context.session.run([graph.get_tensor_by_name("global_step/read:0")])
+      #   #print(global_step)
+      #   resp = _stub.IsReadyScaling(req)
+      #   if resp.do_scaling:
+      #     print(" ----------------- ")
+      #     if self._task_index == "chief":
+      #       run_context.session.close()
+      #       _req = elastic_training_pb2.UpdateServerDefRequest()
+      #       _stub.UpdateServerDef(_req)
+      #     else:
+      #       time.sleep(25)
+      #     print(" +++++++++++++++ ")
+      #     run_context.session.create()
+      #     if self._task_index == "chief":
+      #       print(" =============== ")
+      #       graph = ops.get_default_graph()
+      #       run_context.session.run(self.init_op)
+      #       run_context.session.run(self.import_op)
+      #       try:
+      #         dataset_init = graph.get_operation_by_name("make_initializer")
+      #         run_context.session.run([dataset_init])
+      #       except KeyError:
+      #         pass
+      #     else:
+      #       time.sleep(10)
+      # except Exception as e:
+      #   logging.error(e)
+      # finally:
+      #   self._count = 1
+
       try:
+        # global_step = run_context.session.run([graph.get_operation_by_name("global_step/read:0")])
+        # print(global_step)
         resp = _stub.IsReadyScaling(req)
         if resp.do_scaling:
+          print(" ----------------- ")
           run_context.session.close()
           time.sleep(10)
           if self._task_index == "chief":
@@ -375,21 +415,20 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
             _stub.UpdateServerDef(_req)
           else:
             time.sleep(5)
-          print(" ----------------- ")
+          print(" +++++++++++++++ ")
           run_context.session.create()
           if self._task_index == "chief":
             print(" =============== ")
             graph = ops.get_default_graph()
-            
             run_context.session.run(self.init_op)
-            run_context.session.run(self.op_list)
+            run_context.session.run(self.import_op)
             try:
               dataset_init = graph.get_operation_by_name("make_initializer")
               run_context.session.run([dataset_init])
             except KeyError:
               pass
-            
-            print(" +++++++++++++++ ")
+          else:
+            time.sleep(30)
       except Exception as e:
         logging.error(e)
       finally:
@@ -451,7 +490,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       imported_versions = [import_storage_map[pre_name]["versions"][i] for i in range(len(import_storage_map[pre_name]["versions"])) if i != partition_id]
       imported_freqs = [import_storage_map[pre_name]["freqs"][i] for i in range(len(import_storage_map[pre_name]["freqs"])) if i != partition_id]
       op_list.append(gen_kv_variable_ops.import_storage(ev.handle, imported_keys, imported_values,
-                                                           imported_versions, imported_freqs))
+                                                           imported_versions, imported_freqs, partition_id=partition_id))
 
     return op_list
         

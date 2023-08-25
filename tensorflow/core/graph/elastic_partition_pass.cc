@@ -33,6 +33,8 @@ constexpr char kSaveOp[] = "SaveV3";
 
 namespace tensorflow {
 
+int ElasticTrainingPass::ori_partition_nums_ = 0;
+
 inline string NewNodeName(const string& ori_name, int partition_id) {
   auto part_idx = ori_name.find(kPart);
   std::string pre_str = ori_name.substr(0, part_idx-1);
@@ -70,6 +72,15 @@ Status ElasticTrainingPass::Run(const GraphOptimizationPassOptions& options) {
   }
 
   TF_RETURN_IF_ERROR(UpdatePartitionNums());
+  if (ori_partition_nums_ == 0) {
+    ori_partition_nums_ = partition_nums_;
+    return Status::OK();
+  } else if (ori_partition_nums_ == partition_nums_) {
+    LOG(INFO) << "No need to redistribution";
+    return Status::OK();
+  } else {
+    ori_partition_nums_ = partition_nums_;
+  }
 
   Graph *graph = options.graph->get();
   if (graph == nullptr)
@@ -114,7 +125,7 @@ Status ElasticTrainingPass::RewriteTrainingGraph(Graph* g, bool is_test) {
   TF_RETURN_IF_ERROR(InitEVMeta(g, primary_ev_metas_map, primary_ev_to_opt_map, ev_to_origin_map));
   TF_RETURN_IF_ERROR(RewriteTrainingSubGraph(g, primary_ev_metas_map, primary_ev_to_opt_map, ev_to_origin_map, is_test));
   TF_RETURN_IF_ERROR(RewriteSavingSubGraph(g, primary_ev_metas_map, primary_ev_to_opt_map, ev_to_origin_map));
-
+  
   return Status::OK();
 }
 
@@ -415,10 +426,34 @@ Status ElasticTrainingPass::RewriteTrainingSubGraph(Graph* g,
   std::unordered_map<std::string, std::pair<Node*, Node*>> ev_to_primary_map;
   std::vector<Node*> no_op_vec(partition_nums_, nullptr);
   std::vector<Node*> init_op_vec(partition_nums_, nullptr);
+  Node* import_op_main;
+  for (auto* node: g->nodes()) {
+    if (node->name() == "elastic_subgraph_import") {
+      import_op_main = node;
+    }
+  }
 
   for (auto it : primary_ev_to_opt_map) {
     auto primary_ev_name = it.first;
     auto opt_ev_names = it.second;
+    std::sort(opt_ev_names.begin(), opt_ev_names.end(), [](const std::string& str1, const std::string& str2) {
+      auto part_idx = str1.rfind("/");
+      std::string post_str = str1.substr(part_idx);
+      auto post_idx = post_str.rfind("_");
+      if (post_idx == string::npos) {
+        return true;
+      }
+      
+      auto part_idx_1 = str2.rfind("/");
+      std::string post_str_1 = str2.substr(part_idx_1);
+      auto post_idx_1 = post_str_1.rfind("_");
+      if (post_idx_1 == string::npos) {
+        return false;
+      }
+
+      return std::stoi(post_str.substr(post_idx)) < std::stoi(post_str_1.substr(post_idx_1));
+    });
+
     int ev_partition_num = primary_ev_metas_map[primary_ev_name];
     std::vector<Node*> nodes_to_delete;
     if (ev_partition_num == partition_nums_) {
@@ -620,9 +655,10 @@ Status ElasticTrainingPass::RewriteTrainingSubGraph(Graph* g,
 
     if (!is_test) {
       if (ev_partition_num < partition_nums_) {
-        TF_RETURN_IF_ERROR(ScalingUpRedistributionGraph(g, ev_to_origin_map[primary_ev_name], ev_partition_num, true));
+        std::vector<Node*> primary_ev_filters(partition_nums_, nullptr);
+        TF_RETURN_IF_ERROR(ScalingUpRedistributionGraph(g, ev_to_origin_map[primary_ev_name], import_op_main, ev_partition_num, primary_ev_filters));
         for (auto& opt_ev_name: opt_ev_names) {
-          TF_RETURN_IF_ERROR(ScalingUpRedistributionGraph(g, ev_to_origin_map[opt_ev_name], ev_partition_num, false));
+          TF_RETURN_IF_ERROR(ScalingUpRedistributionGraph(g, ev_to_origin_map[opt_ev_name], import_op_main, ev_partition_num, primary_ev_filters));
         }
       } else if (partition_nums_  < ev_partition_num) {
         TF_RETURN_IF_ERROR(ScalingDownRedistributionGraph(g, ev_to_origin_map[primary_ev_name], ev_partition_num));
@@ -652,7 +688,7 @@ Status ElasticTrainingPass::RewriteTrainingSubGraph(Graph* g,
       }
     }
   }
-  
+
   return Status::OK();
 }
 
@@ -777,33 +813,27 @@ Status ElasticTrainingPass::ScalingUpBackWardGraph(Graph* g,
                                             control_denpency->name() + "_" + std::to_string(i));
               g->AddEdge(new_control_denpency, 0, new_reshape, 0);
 
+              for (auto* i_edge: control_denpency->in_edges()) {
+                if (i_edge->IsControlEdge()) {
+                  g->AddControlEdge(i_edge->src(), new_control_denpency);
+                }
+              }
+
               //control_dependency INPUT 0
               Node* gather_1;
               TF_RETURN_IF_ERROR(control_denpency->input_node(0, &gather_1));
               Node* new_gather_1 = CopyNode(g, gather_1, gather_1->assigned_device_name(),
                                             gather_1->name() + "_" + std::to_string(i));
               g->AddEdge(new_gather_1, 0, new_control_denpency, 0);
-
-              //gather_1 INPUT0 exactly once !!!!!!
-              if (i == ev_partition_num) {
-                Node* reshape_1;
-                TF_RETURN_IF_ERROR(gather_1->input_node(0, &reshape_1));
-                new_reshape_1 = CopyNode(g, reshape_1, reshape_1->assigned_device_name(),
-                                            reshape_1->name() + "_" + std::to_string(i));
-                // Reshape INPUT
-                Node* sparse_segment_mean;
-                TF_RETURN_IF_ERROR(reshape_1->input_node(0, &sparse_segment_mean));
-                g->AddEdge(sparse_segment_mean, 0, new_reshape_1, 0);
-
-                Node* shape_1;
-                TF_RETURN_IF_ERROR(reshape_1->input_node(1, &shape_1));
-                Node* new_shape_1 = CopyNode(g, shape_1, shape_1->assigned_device_name(),
-                                              shape_1->name() + "_" + std::to_string(i));
-                g->AddEdge(new_shape_1, 0, new_reshape_1, 1);
-                // g->AddEdge(p_dynamic_stitch_node, 0, new_shape_1, 0);
+              for (auto* o_edge: gather_1->out_edges()) {
+                if (o_edge->IsControlEdge()) {
+                  g->AddControlEdge(new_gather_1, o_edge->dst());
+                }
               }
-              
-              g->AddEdge(new_reshape_1, 0, new_gather_1, 0);
+
+              Node* reshape_1;
+              TF_RETURN_IF_ERROR(gather_1->input_node(0, &reshape_1));
+              g->AddEdge(reshape_1, 0, new_gather_1, 0);
 
               //gather_1 INPUT1
               g->AddEdge(elastic_node, partition_nums_+i/*idx*/, new_gather_1, 1);
@@ -871,15 +901,6 @@ Status ElasticTrainingPass::ScalingUpBackWardGraph(Graph* g,
                 Node* new_node = CopyNode(g, partial_strided_slice, new_device_name,
                                           NewNodeName(partial_strided_slice->name(), i));
                 g->AddEdge(new_node, 0, new_strided_slice, k);
-                // std::vector<const Edge*> input_edges;
-                // for (auto* edge: new_node->in_edges()) {
-                //   if (edge->IsControlEdge()) {
-                //     input_edges.emplace_back(edge);
-                //   }
-                // }
-                // for (auto* edge: input_edges) {
-                //   g->RemoveEdge(edge);
-                // }
               }
             }
           } else {
@@ -896,13 +917,16 @@ Status ElasticTrainingPass::ScalingUpBackWardGraph(Graph* g,
 
 Status ElasticTrainingPass::ScalingUpRedistributionGraph(Graph* g,
                                                          std::vector<Node*>& ev_node_vec,
-                                                         int ev_partition_num, bool is_primary) {
+                                                         Node* import_op_main,
+                                                         int ev_partition_num,
+                                                         std::vector<Node*>& primary_ev_filters) {
   Status s;
   DataType key_type, value_type;
   std::vector<Node*> filtered_node_vec;
   filtered_node_vec.reserve(partition_nums_);
   for (int i = 0 ; i < partition_nums_; ++i) {
     auto* ev_node = ev_node_vec[i];
+    auto* primary_ev_filter_node = primary_ev_filters[i];
     
     if (i < ev_partition_num) {
       for (auto* o_node: ev_node->out_nodes()) {
@@ -912,6 +936,11 @@ Status ElasticTrainingPass::ScalingUpRedistributionGraph(Graph* g,
           o_node->ClearAttr("new_partition_nums");
           o_node->AddAttr("new_partition_nums", partition_nums_);
           filtered_node_vec.push_back(o_node);
+          if (primary_ev_filter_node == nullptr) {
+            primary_ev_filters[i] = o_node;
+          } else {
+            g->AddControlEdge(o_node, primary_ev_filters[i]);
+          }
         }
       }
     } else {
@@ -927,20 +956,12 @@ Status ElasticTrainingPass::ScalingUpRedistributionGraph(Graph* g,
       Node* filter_node = g->AddNode(filter_storage_node_def, &s);
       TF_RETURN_IF_ERROR(s);
 
-      // for (auto* o_node: ev_node->out_nodes()) {
-      //   if (o_node->type_string() == kEvInitOp) {
-      //     if (is_primary) {
-      //       const Node* tmp_check_ev_0;
-      //       TF_RETURN_IF_ERROR(o_node->input_node(0, &tmp_check_ev_0));
-      //       const Node* tmp_check_ev_1;
-      //       TF_RETURN_IF_ERROR(o_node->input_node(1, &tmp_check_ev_1));
-      //       if (tmp_check_ev_0->name() != tmp_check_ev_1->name()) continue;
-      //     }
-      //     // g->AddControlEdge(o_node, filter_node);
-      //   }
-      // }
-
       filtered_node_vec.push_back(filter_node);
+      if (primary_ev_filter_node == nullptr) {
+        primary_ev_filters[i] = filter_node;
+      } else {
+        g->AddControlEdge(filter_node, primary_ev_filters[i]);
+      }
     }
   }
 
@@ -1001,19 +1022,7 @@ Status ElasticTrainingPass::ScalingUpRedistributionGraph(Graph* g,
                                         .Finalize(&import_storage_node_def)); 
       Node* import_node = g->AddNode(import_storage_node_def, &s);
       TF_RETURN_IF_ERROR(s);
-      for (auto* o_node: ev_node->out_nodes()) {
-        if (o_node->type_string() == kEvInitOp) {
-          if (is_primary) {
-            const Node* tmp_check_ev_0;
-            TF_RETURN_IF_ERROR(o_node->input_node(0, &tmp_check_ev_0));
-            const Node* tmp_check_ev_1;
-            TF_RETURN_IF_ERROR(o_node->input_node(1, &tmp_check_ev_1));
-            if (tmp_check_ev_0->name() != tmp_check_ev_1->name()) continue;
-          }
-
-          // g->AddControlEdge(o_node, filtered_node_vec[i]);
-        }
-      }
+      g->AddControlEdge(import_node, import_op_main);
       // LOG(INFO) << "filter op op_def : " << import_node->def().DebugString();
       for (int k = 0; k < ev_partition_num; ++k) {
         auto* tmp_ev_node = ev_node_vec[k];

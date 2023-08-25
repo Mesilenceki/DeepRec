@@ -100,7 +100,7 @@ class MultiTierStorage : public Storage<K, V> {
 
   Status GetSnapshot(std::vector<K>* key_list,
                      std::vector<ValuePtr<V>*>* value_ptr_list,
-                     int partition_id, int partition_nums) override {
+                     int partition_id, int partition_nums, bool is_primary) override {
     LOG(FATAL)<<"Can't get snapshot of MultiTierStorage.";
   }
 

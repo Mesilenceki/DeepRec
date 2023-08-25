@@ -217,7 +217,7 @@ class LocklessHashMapCPU : public KVInterface<K, V> {
 
   Status GetSnapshot(std::vector<K>* key_list,
       std::vector<ValuePtr<V>*>* value_ptr_list,
-      int partition_id, int partition_nums) override {
+      int partition_id, int partition_nums, bool is_primary) override {
     std::pair<const K, ValuePtr<V>*> *hash_map_dump;
     int64 bucket_count;
     auto it = hash_map_.GetSnapshot();

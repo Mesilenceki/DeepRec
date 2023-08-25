@@ -1406,8 +1406,6 @@ class KvSparseApplyAdamOp : public OpKernel {
     EmbeddingVar<Tindex, T>* var = nullptr;
     OP_REQUIRES_OK(ctx, GetInputEmbeddingVar(ctx, 0, &var));
     core::ScopedUnref unref_var(var);
-
-    LOG(INFO) << "KvSparseApplyAdamOp CALLING: " << var->Name();
     
     EmbeddingVar<Tindex, T>* m = nullptr;
     OP_REQUIRES_OK(ctx, GetInputEmbeddingVar(ctx, 1, &m));

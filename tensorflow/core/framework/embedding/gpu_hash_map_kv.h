@@ -256,7 +256,7 @@ class GPUHashMapKV : public KVInterface<K, V> {
 
   Status GetSnapshot(std::vector<K>* key_list,
                      std::vector<ValuePtr<V>*>* value_ptr_list,
-                     int partition_id, int partition_nums) override {
+                     int partition_id, int partition_nums, bool is_primary) override {
     return Status::OK();
   }
 

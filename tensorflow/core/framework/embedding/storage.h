@@ -103,7 +103,7 @@ class Storage {
       std::vector<ValuePtr<V>*>* value_ptr_list) = 0;
   virtual Status GetSnapshot(std::vector<K>* key_list,
       std::vector<ValuePtr<V>*>* value_ptr_list,
-      int partition_id, int partition_nums) = 0;
+      int partition_id, int partition_nums, bool is_primary) = 0;
   virtual Status Save(
       const string& tensor_name,
       const string& prefix,

@@ -24,7 +24,8 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                     std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map,
                                     bool is_test);
     Status ScalingUpRedistributionGraph(Graph* g,
-                                      std::vector<Node*>& new_ev_node_vec, int ev_partition_num, bool is_primary);
+                                      std::vector<Node*>& new_ev_node_vec, Node* import_op_main,
+                                      int ev_partition_num, std::vector<Node*>& primary_ev_filters);
     
     Status ScalingDownRedistributionGraph(Graph* g,
                                       std::vector<Node*>& new_ev_node_vec, int ev_partition_num);
@@ -44,6 +45,7 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                   int ev_partition_num);
               
   private:
+    static int ori_partition_nums_;
     int partition_nums_;
 };
 
