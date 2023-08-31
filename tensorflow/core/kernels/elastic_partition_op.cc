@@ -77,14 +77,14 @@ class ElasticPartitionOp : public OpKernel {
         if (!ctx->status().ok()) return;
         if (num_partitions_ == 0 || data->NumElements() == 0) return;
 
-        auto e_partitions = partitions.flat<int32>();
+        auto e_partitions = partitions.flat<int64>();
         const int64 N = e_partitions.dimension(0);
 
         
         BlockingCounter counter(1);
         auto do_ids_copying = [this, N, &ctx, &partitions, &data_output, &data,
                                &e_partitions, &counter]() {
-            gtl::InlinedVector<int, 32> output_index(num_partitions_);
+            gtl::InlinedVector<int, 64> output_index(num_partitions_);
 
             if (partitions.dims() == data->dims()) {
                 // Walk through data and copy the data to the appropriate output tensor
@@ -97,7 +97,7 @@ class ElasticPartitionOp : public OpKernel {
                     out_vec.push_back(data_output[p]->vec<TKey>());
                 }
                 for (int64 i = 0; i < N; i++) {
-                    const int32 p = internal::SubtleMustCopy(e_partitions(i));
+                    const int64 p = internal::SubtleMustCopy(e_partitions(i));
                     auto oi = output_index[p];
                     OP_REQUIRES(ctx, FastBoundsCheck(oi, out_vec[p].size()),
                                 errors::InvalidArgument(
@@ -122,7 +122,7 @@ class ElasticPartitionOp : public OpKernel {
                 Eigen::DSizes<Eigen::DenseIndex, 2> sizes(1, slice_size);
                 for (int64 i = 0; i < N; i++) {
                     // outputs[p][output_index[p]++] = data[i]
-                    const int32 p = internal::SubtleMustCopy(e_partitions(i));
+                    const int64 p = internal::SubtleMustCopy(e_partitions(i));
                     auto oi = output_index[p];
                     OP_REQUIRES(ctx, FastBoundsCheck(oi, out_flat[p].dimension(0)),
                                 errors::InvalidArgument("Size of output_index: ", oi,
@@ -140,7 +140,7 @@ class ElasticPartitionOp : public OpKernel {
               ctx->device()->tensorflow_cpu_worker_threads()->workers;
         device_threadpool->Schedule(do_ids_copying);
 
-        gtl::InlinedVector<int, 32> output_index(num_partitions_);
+        gtl::InlinedVector<int, 64> output_index(num_partitions_);
 
         if (partitions.dims() == indices->dims()) {
             // Walk through data and copy the data to the appropriate output tensor
@@ -153,7 +153,7 @@ class ElasticPartitionOp : public OpKernel {
                 out_vec.push_back(indices_output[p]->vec<int32>());
             }
             for (int64 i = 0; i < N; i++) {
-                const int32 p = internal::SubtleMustCopy(e_partitions(i));
+                const int64 p = internal::SubtleMustCopy(e_partitions(i));
                 auto oi = output_index[p];
                 OP_REQUIRES(ctx, FastBoundsCheck(oi, out_vec[p].size()),
                             errors::InvalidArgument(
@@ -178,7 +178,7 @@ class ElasticPartitionOp : public OpKernel {
             Eigen::DSizes<Eigen::DenseIndex, 2> sizes(1, slice_size);
             for (int64 i = 0; i < N; i++) {
                 // outputs[p][output_index[p]++] = data[i]
-                const int32 p = internal::SubtleMustCopy(e_partitions(i));
+                const int64 p = internal::SubtleMustCopy(e_partitions(i));
                 auto oi = output_index[p];
                 OP_REQUIRES(ctx, FastBoundsCheck(oi, out_flat[p].dimension(0)),
                             errors::InvalidArgument("Size of output_index: ", oi,
@@ -208,14 +208,14 @@ class ElasticPartitionOp : public OpKernel {
         int N = (*data)->dim_size(0);
         AllocatorAttributes attr;
         attr.set_on_host(true);
-        OP_REQUIRES_OK(c, c->allocate_temp(DT_INT32, TensorShape({static_cast<int64>(N)}), partitions, attr));
-        auto d_partitions = partitions->flat<int32>().data();
+        OP_REQUIRES_OK(c, c->allocate_temp(DT_INT64, TensorShape({static_cast<int64>(N)}), partitions, attr));
+        auto d_partitions = partitions->flat<int64>().data();
 
         CalculateModulo((*data)->flat<TKey>().data(), N, d_partitions);
         // Count how many occurrences of each partition id we have in partitions
-        gtl::InlinedVector<int, 32> partition_count(num_partitions_);
+        gtl::InlinedVector<int, 64> partition_count(num_partitions_);
         for (int64 i = 0; i < N; i++) {
-            const int32 p = internal::SubtleMustCopy(d_partitions[i]);
+            const int64 p = internal::SubtleMustCopy(d_partitions[i]);
             OP_REQUIRES(c, FastBoundsCheck(p, num_partitions_),
                         errors::InvalidArgument(
                             "partitions", p, " is not in [0, ", num_partitions_, ")"));
@@ -239,13 +239,30 @@ class ElasticPartitionOp : public OpKernel {
         }
     }
     
-    void CalculateModulo(const int64* data, int nums, int32* partitions) {
+    void CalculateModulo(const int64* data, int nums, int64* partitions) {
+#if !defined(__GNUC__) && (__GNUC__ > 6) && (__AVX512F__)
+      __m512d _b = _mm512_set1_pd(num_partitions_);
+      for (int i = 0; i < nums; i+=8) {
+        int index = i / 8;
+        int remain = nums - i;
+        __mmask8 mask = (remain >= 8 ? 0xff : (1 << remain) - 1);
+        __m512d _a = _mm512_maskz_loadu_pd(mask, data + i);
+        __m512d _d = _mm512_div_round_pd(_a, _b, (_MM_FROUND_TO_NEG_INF |_MM_FROUND_NO_EXC) );
+        __m512d _m = _mm512_mul_pd(_b, _d);
+        //__m256i _r = _mm512_maskz_cvt_roundpd_epi32(mask, _mm512_sub_pd(_a, _m), _MM_FROUND_TO_NEG_INF |_MM_FROUND_NO_EXC);
+        __m512i _r = _mm512_castpd_si512(_mm512_sub_pd(_a, _m) );
+        _mm512_mask_storeu_epi64(partitions + i, mask, _r);
+        // _mm256_mask_store_epi32(partitions + i, mask, _r);
+      }
+#else
       for (int i = 0; i < nums; ++i) {
         partitions[i] = data[i] % num_partitions_;
       }
+#endif
     }
 
-    void CalculateModulo(const int32* data, int nums, int32* partitions) {
+
+    void CalculateModulo(const int32* data, int nums, int64* partitions) {
       for (int i = 0; i < nums; ++i) {
         partitions[i] = data[i] % num_partitions_;
       }

@@ -3,27 +3,34 @@ syntax = "proto3";
 package tensorflow;
 option cc_enable_arenas = true;
 
+enum ScalingAction {
+  NONE = 0;
+  SCALING_UP = 1;
+  SCALING_DOWN = 2;
+}
+
 message CheckElasticRequest {
-  int32 task_index = 1;
+  int32 task_index = 3;
 }
 
 message CheckElasticResponse {
-  bool do_scaling = 2;
+  ScalingAction scaling_action = 4;
+  repeated string ps_addr = 5;
 }
 
 message FetchParamsRequest {
-  repeated string names = 3;
+  repeated string names = 6;
 }
 
 message FetchParamsResponse {
-  map<string, int32> param_partition_map = 4;
+  map<string, int32> param_partition_map = 7;
 }
 
 message UpdateServerDefRequest {
 }
 
 message UpdateServerDefResponse {
-  string ret = 5;
+  string ret = 8;
 }
 
 service ElasticTrainingService {

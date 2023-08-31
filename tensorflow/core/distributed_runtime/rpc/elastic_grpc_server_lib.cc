@@ -143,63 +143,109 @@ Status ElasticGrpcServer::GetPort(int* port) const {
   return Status::OK();
 }
 
-int ElasticGrpcServer::UpdateServerDef() {
+Status ElasticGrpcServer::UpdateServerDef(int& before_part_num, int& after_part_num) {
   std::string tf_config;
   ReadStringFromEnvVar("TF_CONFIG", "", &tf_config);
   if (!tf_config.empty()) {
     Json::Reader reader;
     Json::Value tf_config_json;
     if(!reader.parse(tf_config, tf_config_json)) {
-      LOG(ERROR) << "PARSE TF_CONFIG ERROR";
-      return -1;
+      return errors::Internal("PARSE TF_CONFIG ERROR");
     }
     if ((tf_config_json["cluster"].isNull()) ||
         (tf_config_json["cluster"]["ps"].isNull())) {
-      LOG(ERROR) << "PARSE ps ERROR";
-      return -1;
+      return errors::Internal("PARSE PS FROM TF_CONFIG ERROR");
     }
-    Json::Value ps_addr("localhost:10088");
-    tf_config_json["cluster"]["ps"].append(ps_addr);
+
+    // Json::Value cluster_def_json;
+    // LOG(INFO) << "tf_config string is: " << tf_cluster_def;
+    // if(!reader.parse(tf_cluster_def, cluster_def_json)) {
+    //   return errors::Internal("PARSE CLUSTER_DEF ERROR");
+    // }
+    // if ((cluster_def_json["cluster"].isNull()) ||
+    //     (cluster_def_json["cluster"]["ps"].isNull())) {
+    //   return errors::Internal("PARSE PS FROM CLUSTER_DEF ERROR");
+    // }
+
     Json::Value ps_array = tf_config_json["cluster"]["ps"];
-    int partition_nums = ps_array.size();
+    after_part_num = ps_array.size();
     int job_size = server_def_.cluster().job_size();
-    LOG(INFO) << "JUNQI ===============>" << partition_nums;
-    for (int j= 0;j < job_size; ++j) {
+    for (int j = 0; j < job_size; ++j) {
       auto* job = server_def_.mutable_cluster()->mutable_job(j);
       if (job->name() == "ps") {
-        int ori_partition_nums = job->tasks_size();
-        if (ori_partition_nums == partition_nums) return -1;
-        if (ori_partition_nums < partition_nums) {
-          for (int i = ori_partition_nums; i < partition_nums; ++i) {
-            Json::Value ps_string = ps_array[i];
-            if (ps_string.isString()) {
-              job->mutable_tasks()->insert({i, ps_string.asString()});
+        before_part_num = job->tasks_size();
+        if (before_part_num == after_part_num) {
+          return Status::OK();
+        } else if (after_part_num > before_part_num) {
+          LOG(INFO) << "JUNQI Scaling up ===============>" << after_part_num;
+          for (int i = before_part_num; i < after_part_num; ++i) {
+            Json::Value ps_addr = tf_config_json["cluster"]["ps"][i];
+            if (ps_addr.isString()) {
+              job->mutable_tasks()->insert({i, ps_addr.asString()});
+              // tf_config_json["cluster"]["ps"].append(ps_addr);
             }
-          }
+          } 
+          break;
         } else {
-          for (int i = partition_nums; partition_nums < ori_partition_nums; ++i) {
+          LOG(INFO) << "JUNQI Scaling down ===============>" << after_part_num;
+          for (int i = after_part_num; i < before_part_num; ++i) {
+            // Json::Value ps_addr;
+            // .removeIndex(i, &ps_addr);
             job->mutable_tasks()->erase(i);
           }
         }
-        break;
       }
     }
-    Json::FastWriter writer;
-    std::string new_tf_config = writer.write(tf_config_json);
-    LOG(INFO) << "new TF_CONFIG " << new_tf_config;
-    setenv("TF_CONFIG", new_tf_config.c_str(), 1);
-    return partition_nums;
+    // Json::FastWriter writer;
+    // std::string new_tf_config = writer.write(tf_config_json);
+    // LOG(INFO) << "new TF_CONFIG " << new_tf_config;
+    // setenv("TF_CONFIG", new_tf_config.c_str(), 1);
+    // after_part_num = cluster_def_json["cluster"]["ps"].size();
+    
+    // } else {
+    //   int job_size = server_def_.cluster().job_size();
+      
+    //   for (int j = 0; j < job_size; ++j) {
+    //     auto* job = server_def_.mutable_cluster()->mutable_job(j);
+    //     if (job->name() == "ps") {
+    //       tf_config_json["cluster"]["ps"] = cluster_def_json["cluster"]["ps"];
+    //       for (int i = after_part_num; i < before_part_num; ++i) {
+    //         // Json::Value ps_addr;
+    //         // .removeIndex(i, &ps_addr);
+    //         job->mutable_tasks()->erase(i);
+    //       }
+    //       break;
+    //     }
+    //   }
+    //   Json::FastWriter writer;
+    //   std::string new_tf_config = writer.write(tf_config_json);
+    //   LOG(INFO) << "new TF_CONFIG " << new_tf_config;
+    //   setenv("TF_CONFIG", new_tf_config.c_str(), 1);
+    // }
   }
-  return -1;
+  return Status::OK();
 }
 
 Status ElasticGrpcServer::Update() {
-  int ret = UpdateServerDef();
-  if (ret == -1) return Status::OK();
-
-  auto devices_0 = worker_env_.device_mgr->ListDevices();
-  for (auto* dev: devices_0) {
-    LOG(INFO) << "JUNQI ===============>" << dev->resource_manager()->DebugString();
+  int before_part_num, after_part_num;
+  Status s = UpdateServerDef(before_part_num, after_part_num);
+  if (!s.ok()) {
+    LOG(ERROR) << s.error_message();
+    return Status::OK();
+  }
+  if (after_part_num == before_part_num) {
+    return Status::OK();
+  } else if (after_part_num < before_part_num) {
+    // auto devices_vec = worker_env_.device_mgr->ListDevices();
+    // LOG(INFO) << devices_vec.size() << " <=======";
+    // for (int i = after_part_num; i > before_part_num; --i) {
+    //   for (auto* dev: devices_vec) {
+    //     auto idx = dev->name().find("task:"+std::to_string(i));
+    //     if (idx != string::npos) {
+    //       dev->ClearResourceMgr();
+    //     }
+    //   }
+    // }
   }
 
   WorkerCacheInterface* worker_cache;
@@ -260,10 +306,6 @@ Status ElasticGrpcServer::Update() {
              WorkerCacheInterface** worker_cache) {
         return WorkerCacheFactory(options, worker_cache);
       };
-  // auto devices = worker_env_.device_mgr->ListDevices();
-  // for (auto* dev: devices) {
-  //   LOG(INFO) << "JUNQI ===============>" << dev->resource_manager()->DebugString();
-  // }
   return Status::OK();
 }
 

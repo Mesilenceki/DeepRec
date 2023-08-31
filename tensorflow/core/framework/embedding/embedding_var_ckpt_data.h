@@ -50,9 +50,6 @@ class  EmbeddingVarCkptData {
       } else {
         V* val = value_ptr->GetValue(emb_config.emb_index,
             value_offset);
-        // if (val == nullptr) {
-        //   LOG(INFO) << "value is nullptr" << key;
-        // }
         value_ptr_vec_.emplace_back(val);
       }
 
@@ -144,14 +141,12 @@ class  EmbeddingVarCkptData {
               << " ==== " << version_vec_.size() << " === " << freq_vec_.size();
 
     EVVectorDataDumpIterator<K> key_dump_iter(key_vec_);
-    LOG(INFO) << "CALLING keys";
     Status s = SaveTensorWithFixedBuffer(
         tensor_name + "-keys", writer, dump_buffer.get(),
         bytes_limit, &key_dump_iter,
         TensorShape({key_vec_.size()}));
     if (!s.ok())
       return s;
-    LOG(INFO) << "CALLING values";
     EV2dVectorDataDumpIterator<V> value_dump_iter(
         value_ptr_vec_, value_len, value_iter);
     s = SaveTensorWithFixedBuffer(
@@ -160,7 +155,6 @@ class  EmbeddingVarCkptData {
         TensorShape({value_ptr_vec_.size(), value_len}));
     if (!s.ok())
       return s;
-    LOG(INFO) << "CALLING versions";
     EVVectorDataDumpIterator<int64> version_dump_iter(version_vec_);
     s = SaveTensorWithFixedBuffer(
         tensor_name + "-versions", writer, dump_buffer.get(),
@@ -168,7 +162,6 @@ class  EmbeddingVarCkptData {
         TensorShape({version_vec_.size()}));
     if (!s.ok())
       return s;
-    LOG(INFO) << "CALLING freqs";
     EVVectorDataDumpIterator<int64> freq_dump_iter(freq_vec_);
     s = SaveTensorWithFixedBuffer(
         tensor_name + "-freqs", writer, dump_buffer.get(),

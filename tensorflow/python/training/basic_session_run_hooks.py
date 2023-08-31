@@ -360,6 +360,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
   def after_run(self, run_context, run_value):
     if self._count % 2000 == 0:
       import grpc
+      import json
       from tensorflow.python.training import elastic_training_pb2_grpc
       from tensorflow.python.training import elastic_training_pb2
       channel = grpc.insecure_channel(self._aimaster_addr)
@@ -406,8 +407,13 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
         # global_step = run_context.session.run([graph.get_operation_by_name("global_step/read:0")])
         # print(global_step)
         resp = _stub.IsReadyScaling(req)
-        if resp.do_scaling:
-          print(" ----------------- ")
+        if resp.scaling_action == elastic_training_pb2.SCALING_UP:
+          ps_addrs = resp.ps_addr
+          tf_config = json.loads(os.environ.get('TF_CONFIG', ""))
+          for addr in ps_addrs:
+            tf_config["cluster"]["ps"].append(addr)
+          os.environ["TF_CONFIG"] = json.dumps(tf_config)
+          print(" ----------------- ", tf_config)
           run_context.session.close()
           time.sleep(10)
           if self._task_index == "chief":
@@ -422,6 +428,33 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
             graph = ops.get_default_graph()
             run_context.session.run(self.init_op)
             run_context.session.run(self.import_op)
+            try:
+              dataset_init = graph.get_operation_by_name("make_initializer")
+              run_context.session.run([dataset_init])
+            except KeyError:
+              pass
+          else:
+            time.sleep(30)
+        elif resp.scaling_action == elastic_training_pb2.SCALING_DOWN:
+          ps_addrs = resp.ps_addr
+          tf_config = json.loads(os.environ.get('TF_CONFIG', ""))
+          tf_config["cluster"]["ps"] = [x for x in tf_config["cluster"]["ps"] if x not in ps_addrs]
+          os.environ["TF_CONFIG"] = json.dumps(tf_config)
+          print("+++++++++++++++", tf_config)
+          run_context.session.close()
+          run_context.session.create()
+          if self._task_index == "chief":
+            run_context.session.run(self.import_op)
+          else:
+            time.sleep(10)
+          if self._task_index == "chief":
+            _req = elastic_training_pb2.UpdateServerDefRequest()
+            _stub.UpdateServerDef(_req)
+          else:
+            time.sleep(5)
+          if self._task_index == "chief":
+            print(" =============== ")
+            graph = ops.get_default_graph()
             try:
               dataset_init = graph.get_operation_by_name("make_initializer")
               run_context.session.run([dataset_init])

@@ -67,8 +67,9 @@ class FilterStorageOp : public OpKernel {
     int64 before_size = embedding_var->Size();
     OP_REQUIRES_OK(ctx, embedding_var->GetSnapshot(&filtered_keys, &value_ptr_list,
                                                    partition_id_, new_partition_nums_));
-    LOG(INFO) << "JUNQI ===> filter: "<< embedding_var->Name() << " === " << before_size
-              << " ==== " << embedding_var->Size(); 
+    int64 after_size = embedding_var->Size();
+    LOG(INFO) << "JUNQI ===> filter: " << embedding_var->Name() << " === " << before_size
+              << " ==== " << after_size; 
     Tensor* unneeded_ids_tensor = nullptr;
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, {filtered_keys.size()}, &unneeded_ids_tensor));
     Tensor* unneeded_value_tensor = nullptr;
@@ -93,12 +94,7 @@ class FilterStorageOp : public OpKernel {
     //     LOG(INFO) << " value is : " << unneeded_value[i*embedding_var->ValueLen() + j];
     //   }
     // }
-    
 
-    int64 after_size = embedding_var->Size();
-    // if (before_size - after_size > 0) {
-
-    // }
   }
  private:
   int partition_id_;
@@ -135,7 +131,7 @@ class ImportStorageOp : public OpKernel {
       const Tensor& import_ids_tensor = ctx->input(1+i);
       auto* import_ids = import_ids_tensor.flat<TKey>().data();
       int64 N = import_ids_tensor.NumElements();
-      if ( N == 0) continue;
+      if ( N == 0 ) continue;
       const Tensor& import_values_tensor = ctx->input(1+partition_nums_+i);
       auto* import_values = import_values_tensor.flat<float>().data();
       
@@ -148,7 +144,8 @@ class ImportStorageOp : public OpKernel {
                                    import_freqs));
     }
     int64 after_size = embedding_var->Size();
-    LOG(INFO) << "JUNQI ===> import: "<< embedding_var->Name() << " === " << after_size << "  === " << before_size;
+    LOG(INFO) << embedding_var->Name() << " ===> import: "
+              << " === " << after_size << "  === " << before_size;
 
   }
  private:

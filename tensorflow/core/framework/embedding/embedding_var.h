@@ -608,11 +608,7 @@ class EmbeddingVar : public ResourceBase {
     for (int64 i = 0; i < filtered_keys_list.size(); ++i) {
       V* val = filtered_value_ptr_list[i]->GetValue(emb_config_.emb_index,
         storage_->GetOffset(emb_config_.emb_index));
-      V* primary_val = filtered_value_ptr_list[i]->GetValue(
-          0, 0);
-      // V* primary_val = filtered_value_ptr_list[i]->GetValue(
-      //     emb_config_.primary_emb_index,
-      //     storage_->GetOffset(emb_config_.primary_emb_index));
+      V* primary_val = filtered_value_ptr_list[i]->GetValue(0, 0);
       key_list[i] = filtered_keys_list[i];
       if (emb_config_.filter_freq != 0 || emb_config_.record_freq) {
         int64 dump_freq = filter_->GetFreq(
@@ -621,15 +617,17 @@ class EmbeddingVar : public ResourceBase {
       }
       if (emb_config_.steps_to_live != 0 || emb_config_.record_version) {
         int64 dump_version = filtered_value_ptr_list[i]->GetStep();
-        version_list[i] =dump_version;
+        version_list[i] = dump_version;
       }
 
       if (val != nullptr && primary_val != nullptr) {
         memcpy(value_list + i * value_len_, val, sizeof(V) * value_len_);
       } else if (val != nullptr && primary_val == nullptr) {
-        LOG(INFO) << " key is : " << filtered_keys_list[i];
         memcpy(value_list + i * value_len_, default_value_, sizeof(V) * value_len_);
       } else {
+        if (emb_config_.filter_freq != 0) {
+          // if (!save_unfiltered_features) continue;
+        }
         // feature filtered
         // value_list->emplace_back(nullptr);
       }
@@ -646,6 +644,7 @@ class EmbeddingVar : public ResourceBase {
                                       value_len_, false, false, emb_config_, device,
                                       filter_, restore_buff);
   }
+
   mutex* mu() {
     return &mu_;
   }

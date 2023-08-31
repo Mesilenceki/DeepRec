@@ -196,6 +196,7 @@ TEST_F(ReDistributionOpTest, TestEVImportStorage) {
   for (int64 i = 1; i < ev_size; i+=2) {
     float *output = (float *)malloc(value_size*sizeof(float));
     embedding_var->LookupOrCreate(i, output, fill_v);
+    delete output;
   }
 
   ASSERT_EQ(embedding_var->Size(), ev_size / 2);

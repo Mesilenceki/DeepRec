@@ -96,7 +96,6 @@ class GrpcElasticService : public AsyncServiceInterface {
         new CallData(service_, elastic_grpc_server_, cq_);
 
         // The actual processing.
-        LOG(INFO) << "Processing Request";
         Status s = elastic_grpc_server_->Update();
         if (!s.ok()) LOG(ERROR) << "error" << s.ToString();
         // std::string prefix("Hello ");

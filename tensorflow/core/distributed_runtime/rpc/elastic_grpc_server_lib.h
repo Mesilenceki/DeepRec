@@ -97,7 +97,7 @@ class ElasticGrpcServer : public ServerInterface {
   
   Status Update();
 
-  int UpdateServerDef();
+  Status UpdateServerDef(int& before_part_num, int& after_part_num);
   
  protected:
   virtual Status GetPort(int* port) const;
