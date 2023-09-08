@@ -262,8 +262,8 @@ REGISTER_OP("ElasticPartition")
 
 REGISTER_OP("FilterStorage")
     .Input("resource: resource")
+    .Input("new_partition_nums: int32")
     .Attr("partition_id: int = 0")
-    .Attr("new_partition_nums: int >= 1 = 1")
     .Output("keys: Tkeys")
     .Output("values: dtype")
     .Output("versions: int64")
@@ -289,6 +289,30 @@ REGISTER_OP("ImportStorage")
 Input current parition_id embedding variable and ids from other partion
     embedding variables.Load them according to new partition_num.
 )");
+
+REGISTER_OP("ReAssign")
+    .Input("old: Ref(T)")
+    .Input("new: T")
+    .Input("new_partition_nums: int32")
+    .Output("output_ref: Ref(T)")
+    .Attr("partition_nums: int >= 1 = 1")
+    .Attr("T: type")
+    .Attr("validate_shape: bool = false")
+    .Attr("use_locking: bool = true")
+    .SetAllowsUninitializedInput()
+    .SetShapeFn([](InferenceContext* c) {
+      bool validate_shape;
+      TF_RETURN_IF_ERROR(c->GetAttr("validate_shape", &validate_shape));
+      if (validate_shape) {
+        return shape_inference::MergeBothInputsShapeFn(c);
+      }
+
+      // for ( int i = 0; i < num_lookups; ++i) {
+      //   c->set_output(0, c->input(1));
+      // }
+
+      return Status::OK();
+    });
 
 REGISTER_OP("KvResourceInitCacheStrategyOp")
     .Input("resource: resource")

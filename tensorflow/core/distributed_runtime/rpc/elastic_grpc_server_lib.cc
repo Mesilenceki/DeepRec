@@ -143,7 +143,7 @@ Status ElasticGrpcServer::GetPort(int* port) const {
   return Status::OK();
 }
 
-Status ElasticGrpcServer::UpdateServerDef(int& before_part_num, int& after_part_num) {
+Status ElasticGrpcServer::UpdateServerDef(const RepeatedPbString& repeated_str, int& before_part_num, int& after_part_num) {
   std::string tf_config;
   ReadStringFromEnvVar("TF_CONFIG", "", &tf_config);
   if (!tf_config.empty()) {
@@ -157,18 +157,7 @@ Status ElasticGrpcServer::UpdateServerDef(int& before_part_num, int& after_part_
       return errors::Internal("PARSE PS FROM TF_CONFIG ERROR");
     }
 
-    // Json::Value cluster_def_json;
-    // LOG(INFO) << "tf_config string is: " << tf_cluster_def;
-    // if(!reader.parse(tf_cluster_def, cluster_def_json)) {
-    //   return errors::Internal("PARSE CLUSTER_DEF ERROR");
-    // }
-    // if ((cluster_def_json["cluster"].isNull()) ||
-    //     (cluster_def_json["cluster"]["ps"].isNull())) {
-    //   return errors::Internal("PARSE PS FROM CLUSTER_DEF ERROR");
-    // }
-
-    Json::Value ps_array = tf_config_json["cluster"]["ps"];
-    after_part_num = ps_array.size();
+    after_part_num = repeated_str.size();
     int job_size = server_def_.cluster().job_size();
     for (int j = 0; j < job_size; ++j) {
       auto* job = server_def_.mutable_cluster()->mutable_job(j);
@@ -179,73 +168,39 @@ Status ElasticGrpcServer::UpdateServerDef(int& before_part_num, int& after_part_
         } else if (after_part_num > before_part_num) {
           LOG(INFO) << "JUNQI Scaling up ===============>" << after_part_num;
           for (int i = before_part_num; i < after_part_num; ++i) {
-            Json::Value ps_addr = tf_config_json["cluster"]["ps"][i];
-            if (ps_addr.isString()) {
-              job->mutable_tasks()->insert({i, ps_addr.asString()});
-              // tf_config_json["cluster"]["ps"].append(ps_addr);
-            }
+            auto ps_addr = repeated_str[i];
+            job->mutable_tasks()->insert({i, ps_addr});
+            tf_config_json["cluster"]["ps"].append(ps_addr);
           } 
           break;
         } else {
           LOG(INFO) << "JUNQI Scaling down ===============>" << after_part_num;
           for (int i = after_part_num; i < before_part_num; ++i) {
-            // Json::Value ps_addr;
-            // .removeIndex(i, &ps_addr);
+            Json::Value ps_addr;
+            tf_config_json["cluster"]["ps"].removeIndex(i, &ps_addr);
             job->mutable_tasks()->erase(i);
           }
         }
       }
     }
-    // Json::FastWriter writer;
-    // std::string new_tf_config = writer.write(tf_config_json);
-    // LOG(INFO) << "new TF_CONFIG " << new_tf_config;
-    // setenv("TF_CONFIG", new_tf_config.c_str(), 1);
-    // after_part_num = cluster_def_json["cluster"]["ps"].size();
-    
-    // } else {
-    //   int job_size = server_def_.cluster().job_size();
-      
-    //   for (int j = 0; j < job_size; ++j) {
-    //     auto* job = server_def_.mutable_cluster()->mutable_job(j);
-    //     if (job->name() == "ps") {
-    //       tf_config_json["cluster"]["ps"] = cluster_def_json["cluster"]["ps"];
-    //       for (int i = after_part_num; i < before_part_num; ++i) {
-    //         // Json::Value ps_addr;
-    //         // .removeIndex(i, &ps_addr);
-    //         job->mutable_tasks()->erase(i);
-    //       }
-    //       break;
-    //     }
-    //   }
-    //   Json::FastWriter writer;
-    //   std::string new_tf_config = writer.write(tf_config_json);
-    //   LOG(INFO) << "new TF_CONFIG " << new_tf_config;
-    //   setenv("TF_CONFIG", new_tf_config.c_str(), 1);
-    // }
+    Json::FastWriter writer;
+    std::string new_tf_config = writer.write(tf_config_json);
+    LOG(INFO) << "new TF_CONFIG " << new_tf_config;
+    setenv("TF_CONFIG", new_tf_config.c_str(), 1);
   }
   return Status::OK();
 }
 
-Status ElasticGrpcServer::Update() {
+Status ElasticGrpcServer::Update(const RepeatedPbString& repeated_str) {
   int before_part_num, after_part_num;
-  Status s = UpdateServerDef(before_part_num, after_part_num);
+  Status s = UpdateServerDef(repeated_str, before_part_num, after_part_num);
   if (!s.ok()) {
     LOG(ERROR) << s.error_message();
     return Status::OK();
   }
+
   if (after_part_num == before_part_num) {
     return Status::OK();
-  } else if (after_part_num < before_part_num) {
-    // auto devices_vec = worker_env_.device_mgr->ListDevices();
-    // LOG(INFO) << devices_vec.size() << " <=======";
-    // for (int i = after_part_num; i > before_part_num; --i) {
-    //   for (auto* dev: devices_vec) {
-    //     auto idx = dev->name().find("task:"+std::to_string(i));
-    //     if (idx != string::npos) {
-    //       dev->ClearResourceMgr();
-    //     }
-    //   }
-    // }
   }
 
   WorkerCacheInterface* worker_cache;

@@ -5443,8 +5443,10 @@ tf_kernel_library(
 
 tf_kernel_library(
     name = "elastic_partition_kernel",
+    hdrs = ["redistribution_functor.h"],
     srcs = ["elastic_partition_op.cc",
-            "redistribution_ops.cc"],
+            "redistribution_ops.cc",
+            "redistribution_functor.cc"],
     deps = ["//third_party/eigen3",
             "//tensorflow/core/kernels:gpu_device_array",
             "//tensorflow/core/util/tensor_bundle",

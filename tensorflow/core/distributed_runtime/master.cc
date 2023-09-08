@@ -441,7 +441,6 @@ void Master::CreateSession(const CreateSessionRequest* req,
       }
     } else {
       worker_cache = env_->worker_cache;
-      LOG(INFO) << worker_cache << " JUNQI < ---------- > ";
       // Ping all the workers and build the list of devices that the
       // session will use.
       status =
@@ -450,7 +449,6 @@ void Master::CreateSession(const CreateSessionRequest* req,
       if (!status.ok()) return;
       device_set.reset(new DeviceSet);
       for (auto&& d : *remote_devices) {
-        LOG(INFO) << d->DebugString() << " JUNQI < ---------- > ";
         device_set->AddDevice(d.get());
       }
       int num_local_devices = 0;

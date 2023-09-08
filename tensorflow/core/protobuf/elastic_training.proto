@@ -15,7 +15,7 @@ message CheckElasticRequest {
 
 message CheckElasticResponse {
   ScalingAction scaling_action = 4;
-  repeated string ps_addr = 5;
+  int32 ps_num = 5;
 }
 
 message FetchParamsRequest {
@@ -27,15 +27,16 @@ message FetchParamsResponse {
 }
 
 message UpdateServerDefRequest {
+  repeated string ps_addr = 8;
 }
 
 message UpdateServerDefResponse {
-  string ret = 8;
+  string ret = 9;
 }
 
 service ElasticTrainingService {
-    rpc IsReadyScaling(CheckElasticRequest) returns (CheckElasticResponse);
-    rpc FetchParamsMeta(FetchParamsRequest) returns (FetchParamsResponse);
-    rpc UpdateServerDef(UpdateServerDefRequest) returns (UpdateServerDefResponse);
+  rpc IsReadyScaling(CheckElasticRequest) returns (CheckElasticResponse);
+  rpc FetchParamsMeta(FetchParamsRequest) returns (FetchParamsResponse);
+  rpc UpdateServerDef(UpdateServerDefRequest) returns (UpdateServerDefResponse);
 }
 
