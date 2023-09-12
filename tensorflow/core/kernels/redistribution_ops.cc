@@ -174,13 +174,10 @@ class ReAssignOp : public OpKernel {
   explicit ReAssignOp(OpKernelConstruction* context) : OpKernel(context) {
     OP_REQUIRES_OK(context,
                    context->GetAttr("use_locking", &use_exclusive_lock_));
-    OP_REQUIRES_OK(context,
-                   context->GetAttr("validate_shape", &validate_shape_));
+    OP_REQUIRES_OK(context, context->GetAttr("partition_id", &partition_id_));
     OP_REQUIRES_OK(context, context->GetAttr("partition_nums", &num_partitions_));
     OP_REQUIRES(context, IsRefType(context->input_type(0)),
                 errors::InvalidArgument("lhs input needs to be a ref type"));
-    // OP_REQUIRES(context, IsRefType(context->input_type(1)),
-    //             errors::InvalidArgument("lhs input needs to be a ref type"));
   }
   
   void Compute(OpKernelContext* context) override {
@@ -197,6 +194,7 @@ class ReAssignOp : public OpKernel {
 
       TensorShape new_shape = old_lhs.shape();
       new_shape.set_dim(0, old_lhs.shape().dim_size(0) * num_partitions_ / new_num_part);
+      LOG(INFO) << old_lhs.shape().dim_size(0) * num_partitions_ / new_num_part;
 
       // Otherwise, create a new persistent tensor whose shape matches the
       // right hand side, hand off to lhs and copy the rhs into it.
@@ -211,25 +209,32 @@ class ReAssignOp : public OpKernel {
       context->clear_recorded_memory();
       context->replace_ref_input(0, *copyTensor, /* lock_held */ true);
       if (use_exclusive_lock_) {
-        Copy(context, copyTensor, old_lhs, rhs);
+        Copy(context, copyTensor, old_lhs, rhs, new_num_part);
         return;
       }
       // The tensor has already been initialized and the right hand side
       // matches the left hand side's shape. We have been told to do the
       // copy outside the lock.
-      Copy(context, copyTensor, old_lhs, rhs);
+      Copy(context, copyTensor, old_lhs, rhs, new_num_part);
     }
   }
 
  private:
-  void Copy(OpKernelContext* context, Tensor* output, const Tensor& lhs, const Tensor& rhs) {
-    functor::CustomDenseUpdate<Device, T> copy;
-    copy(context->eigen_device<Device>(), output->flat<T>(), lhs.flat<T>(), rhs.flat<T>());
+  void Copy(OpKernelContext* context, Tensor* output, 
+            const Tensor& lhs, const Tensor& rhs, int new_partition_nums) {
+    if (new_partition_nums > num_partitions_) {
+      functor::CustomScaleUp<Device, T> copy;
+      copy(context->eigen_device<Device>(), output->flat<T>(), lhs.flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums);
+    } else {
+      functor::CustomScaleDown<Device, T> copy;
+      copy(context->eigen_device<Device>(), output->flat<T>(), lhs.flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums);
+    }
+
   }
 
  private:
   bool use_exclusive_lock_;
-  bool validate_shape_;
+  int partition_id_;
   int num_partitions_;
 };
 

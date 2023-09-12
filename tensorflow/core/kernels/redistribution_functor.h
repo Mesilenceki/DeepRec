@@ -30,28 +30,22 @@ typedef Eigen::GpuDevice GPUDevice;
 namespace functor {
 
 template <typename Device, typename T>
-struct CustomDenseUpdate {
+struct CustomScaleDown {
   void operator()(const Device& d, 
                   typename TTypes<T>::Flat output,
                   typename TTypes<T>::ConstFlat lhs,
-                  typename TTypes<T>::ConstFlat rhs);
+                  typename TTypes<T>::ConstFlat rhs,
+                  int partition_id, int partition_num);
 };
 
-// template <typename T>
-// struct DenseUpdate<CPUDevice, T, ADD> {
-//   void operator()(const CPUDevice& d, typename TTypes<T>::Flat params,
-//                   typename TTypes<T>::ConstFlat update) {
-//     params.device(d) += update;
-//   }
-// };
-
-// template <typename T>
-// struct DenseUpdate<CPUDevice, T, SUB> {
-//   void operator()(const CPUDevice& d, typename TTypes<T>::Flat params,
-//                   typename TTypes<T>::ConstFlat update) {
-//     params.device(d) -= update;
-//   }
-// };
+template <typename Device, typename T>
+struct CustomScaleUp {
+  void operator()(const Device& d, 
+                  typename TTypes<T>::Flat output,
+                  typename TTypes<T>::ConstFlat lhs,
+                  typename TTypes<T>::ConstFlat rhs,
+                  int partition_id, int partition_num);
+};
 
 }  // end namespace functor
 

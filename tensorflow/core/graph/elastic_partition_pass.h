@@ -33,6 +33,11 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                       std::vector<Node*>& new_ev_node_vec, Node* import_op_main,
                                       int ev_partition_num, std::vector<Node*>& primary_ev_filters);
     
+    Status ScalingUpVarRedistributionGraph(Graph* g,
+                                            std::vector<Node*>& var_node_vec,
+                                            Node* import_op_main,
+                                            int ev_partition_num);
+    
     Status ScalingDownRedistributionGraph(Graph* g,
                                           std::vector<Node*>& new_ev_node_vec, int ev_partition_num);
                                           
@@ -59,7 +64,20 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                     const std::string& primary_ev_name,
                                     const std::vector<std::string>& opt_ev_names,
                                     int ev_partition_num);
+    
+    Status ScalingUpVarBackWardGraph(Graph* g,
+                                  std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map,
+                                  const std::string& primary_ev_name,
+                                  const std::vector<std::string>& opt_ev_names,
+                                  std::vector<Node*>& no_op_vec,
+                                  int ev_partition_num);
 
+    Status ScalingDownVarBackWardGraph(Graph* g,
+                                  std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map,
+                                  const std::string& primary_ev_name,
+                                  const std::vector<std::string>& opt_ev_names,
+                                  std::vector<Node*>& no_op_vec,
+                                  int ev_partition_num);
   private:
     static int ori_partition_nums_;
     bool scaling_up_{false};

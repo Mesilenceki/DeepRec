@@ -1960,7 +1960,6 @@ REGISTER_OP("StridedSlice")
       if (shape_and_type) {
         c->set_output_handle_shapes_and_types(0, *shape_and_type);
       }
-
       return Status::OK();
     });
 

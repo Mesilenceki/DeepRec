@@ -23,6 +23,8 @@ limitations under the License.
 #include <grpcpp/server.h>
 #include <grpcpp/server_builder.h>
 
+using namespace des;
+
 using grpc::Server;
 using grpc::ServerAsyncResponseWriter;
 using grpc::ServerBuilder;
@@ -97,9 +99,13 @@ class GrpcElasticService : public AsyncServiceInterface {
 
         // The actual processing.
         Status s = elastic_grpc_server_->Update(request_.ps_addr());
-        if (!s.ok()) LOG(ERROR) << "error" << s.ToString();
-        // std::string prefix("Hello ");
-        // reply_.set_message(prefix + request_.name());
+        if (s.ok()) {
+          reply_.set_code(Code::OK);
+        } else {
+          reply_.set_code(Code::INTERNAL);
+          reply_.set_msg(s.ToString());
+          LOG(ERROR) << "error" << s.ToString();
+        }
 
         // And we are done! Let the gRPC runtime know we've finished, using the
         // memory address of this instance as the uniquely identifying tag for
