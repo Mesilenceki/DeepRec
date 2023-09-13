@@ -33,7 +33,6 @@ template <typename Device, typename T>
 struct CustomScaleDown {
   void operator()(const Device& d, 
                   typename TTypes<T>::Flat output,
-                  typename TTypes<T>::ConstFlat lhs,
                   typename TTypes<T>::ConstFlat rhs,
                   int partition_id, int partition_num);
 };
@@ -42,7 +41,6 @@ template <typename Device, typename T>
 struct CustomScaleUp {
   void operator()(const Device& d, 
                   typename TTypes<T>::Flat output,
-                  typename TTypes<T>::ConstFlat lhs,
                   typename TTypes<T>::ConstFlat rhs,
                   int partition_id, int partition_num);
 };

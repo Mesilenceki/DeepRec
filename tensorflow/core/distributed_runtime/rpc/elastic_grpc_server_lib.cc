@@ -166,7 +166,7 @@ Status ElasticGrpcServer::UpdateServerDef(const RepeatedPbString& repeated_str, 
         if (before_part_num == after_part_num) {
           return Status::OK();
         } else if (after_part_num > before_part_num) {
-          LOG(INFO) << "JUNQI Scaling up ===============>" << after_part_num;
+          LOG(INFO) << "JUNQI Scaling up ===============> " << after_part_num;
           for (int i = before_part_num; i < after_part_num; ++i) {
             auto ps_addr = repeated_str[i];
             job->mutable_tasks()->insert({i, ps_addr});
@@ -174,7 +174,7 @@ Status ElasticGrpcServer::UpdateServerDef(const RepeatedPbString& repeated_str, 
           } 
           break;
         } else {
-          LOG(INFO) << "JUNQI Scaling down ===============>" << after_part_num;
+          LOG(INFO) << "JUNQI Scaling down ===============> " << after_part_num;
           for (int i = after_part_num; i < before_part_num; ++i) {
             Json::Value ps_addr;
             tf_config_json["cluster"]["ps"].removeIndex(i, &ps_addr);
@@ -192,6 +192,9 @@ Status ElasticGrpcServer::UpdateServerDef(const RepeatedPbString& repeated_str, 
 }
 
 Status ElasticGrpcServer::Update(const RepeatedPbString& repeated_str) {
+  for (auto* device: worker_env_.device_mgr->ListDevices()) {
+    LOG(INFO) << device->resource_manager()->DebugString();
+  }
   int before_part_num, after_part_num;
   Status s = UpdateServerDef(repeated_str, before_part_num, after_part_num);
   if (!s.ok()) {
@@ -208,7 +211,10 @@ Status ElasticGrpcServer::Update(const RepeatedPbString& repeated_str) {
   TF_RETURN_IF_ERROR(
       UpdateWorkerCacheFactory(worker_cache_factory_options, &worker_cache));
   CHECK_NE(nullptr, worker_cache);
-
+  LOG(INFO) << " =============== ";
+  for (auto* device: worker_env_.device_mgr->ListDevices()) {
+    LOG(INFO) << device->resource_manager()->DebugString();
+  }
   ConfigProto config = server_def_.default_session_config();
   string unused;
   string default_worker_name;

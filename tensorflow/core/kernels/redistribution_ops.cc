@@ -193,8 +193,14 @@ class ReAssignOp : public OpKernel {
       const Tensor& rhs = context->input(1);
 
       TensorShape new_shape = old_lhs.shape();
-      new_shape.set_dim(0, old_lhs.shape().dim_size(0) * num_partitions_ / new_num_part);
-      LOG(INFO) << old_lhs.shape().dim_size(0) * num_partitions_ / new_num_part;
+      if (new_num_part > num_partitions_) {
+        new_shape.set_dim(0, (rhs.shape().dim_size(0) - new_shape.dim_size(0) * (new_num_part - num_partitions_)) / new_num_part);
+        LOG(INFO) << "scale up new shape " << new_shape.dim_size(0) << " ---- " << rhs.shape().dim_size(0);
+      } else {
+        new_shape.set_dim(0, rhs.shape().dim_size(0) / new_num_part);
+        LOG(INFO) << "scale down new shape " << new_shape.dim_size(0) << " ---- " << rhs.shape().dim_size(0);
+      }
+      
 
       // Otherwise, create a new persistent tensor whose shape matches the
       // right hand side, hand off to lhs and copy the rhs into it.
@@ -209,25 +215,26 @@ class ReAssignOp : public OpKernel {
       context->clear_recorded_memory();
       context->replace_ref_input(0, *copyTensor, /* lock_held */ true);
       if (use_exclusive_lock_) {
-        Copy(context, copyTensor, old_lhs, rhs, new_num_part);
+        Copy(context, copyTensor, rhs, new_num_part);
         return;
       }
       // The tensor has already been initialized and the right hand side
       // matches the left hand side's shape. We have been told to do the
       // copy outside the lock.
-      Copy(context, copyTensor, old_lhs, rhs, new_num_part);
+      Copy(context, copyTensor, rhs, new_num_part);
     }
   }
 
  private:
   void Copy(OpKernelContext* context, Tensor* output, 
-            const Tensor& lhs, const Tensor& rhs, int new_partition_nums) {
+            const Tensor& rhs, int new_partition_nums) {
     if (new_partition_nums > num_partitions_) {
       functor::CustomScaleUp<Device, T> copy;
-      copy(context->eigen_device<Device>(), output->flat<T>(), lhs.flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums);
+      copy(context->eigen_device<Device>(), output->flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums);
     } else {
+      if (partition_id_ == new_partition_nums) return;
       functor::CustomScaleDown<Device, T> copy;
-      copy(context->eigen_device<Device>(), output->flat<T>(), lhs.flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums);
+      copy(context->eigen_device<Device>(), output->flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums);
     }
 
   }

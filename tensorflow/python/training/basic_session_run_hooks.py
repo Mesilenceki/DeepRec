@@ -444,13 +444,13 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
         self._timer.update_last_triggered_step(global_step)
         _check_scale_()
 
-  def _init_var_repartition_op(self):
+  def _pre_placement_op(self):
     # self.partition_num_ph
     op_list = []
     ev_list = ops.get_collection(ops.GraphKeys.EMBEDDING_VARIABLES)
     variable_list = [x for x in ops.get_collection(ops.GraphKeys.GLOBAL_VARIABLES) if x not in ev_list]
     import_storage_map = defaultdict(list)
-    def process_ev_name(ev):
+    def process_var_name(ev):
       ev_name = ev.name.split(":")[0]
       idx = ev_name.find("part_")
       if idx != -1:
@@ -462,39 +462,69 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
         else:
           pre_name = ev_name[:idx-1] + ev_name[idx:][post_idx:]
           var_idx = ev_name[idx:][part_len:post_idx]
+        ev._variable.op._set_device("/job:ps/task:{}".format(var_idx))
         return True, pre_name, var_idx
       else:
         return False, "", 0
 
-    # def _apply_assign_fn(l_var, r_var, new_partition):
-    #   # partition_axes = 0
-    #   partition_ix = 0
-    #   size_splits_list = [
-    #       tensor_shape.dimension_value(var.shape[partition_ix])
-    #       for var in self._variable_list
-    #   ]
-    #   value_list = array_ops.split(, size_splits_list, axis=partition_ix)
-    #   assign_value = array_ops.concat([l_var, r_var.read_value()[:]], axis=partition_ix)
+    for var in variable_list:
+      flag, pre_name, var_idx = process_var_name(var)
+    return
 
-    #   op_list = [
-    #       lvar.assign(var, value_list[idx])
-    #       for idx, var in enumerate(self._variable_list)
-    #   ]
-    #   return op_list
+  def _init_var_repartition_op(self):
+    # self.partition_num_ph
+    op_list = []
+    ev_list = ops.get_collection(ops.GraphKeys.EMBEDDING_VARIABLES)
+    variable_list = [x for x in ops.get_collection(ops.GraphKeys.GLOBAL_VARIABLES) if x not in ev_list]
+    import_storage_map = defaultdict(list)
+    def process_var_name(ev):
+      ev_name = ev.name.split(":")[0]
+      device_name = ev.device
+      idx = device_name.find("task:")
+      post_name = device_name[idx:]
+      post_idx = post_name.find("/")
+      if post_idx == -1:
+        device_id = int(device_name[idx+len("task:"):])
+      else:
+        device_id = int(post_name[len("task:"):post_idx])
+      idx = ev_name.find("part_")
+      if idx != -1:
+        post_idx = ev_name[idx:].find("/")
+        part_len = len("part_")
+        if (post_idx == -1):
+          pre_name = ev_name[:idx-1]
+          var_idx = int(ev_name[idx+part_len:])
+        else:
+          pre_name = ev_name[:idx-1] + ev_name[idx:][post_idx:]
+          var_idx = int(ev_name[idx:][part_len:post_idx])
+        # ev._variable.op._set_device("/job:ps/task:{}".format(var_idx))
+        # for v
+        return True, pre_name, device_id, var_idx
+      else:
+        return False, "", 0, 0
 
     for var in variable_list:
-      flag, pre_name, var_idx = process_ev_name(var)
-      #print(pre_name, " -- ", var_idx)
+      flag, pre_name, device_id, var_idx = process_var_name(var)
+      print(pre_name, " -- ", var_idx)
       if flag:
-        import_storage_map[pre_name].append((var_idx, var))
-
+        import_storage_map[pre_name].append((device_id, var_idx, var))
+    graph = ops.get_default_graph()
     for var_name, var_list in import_storage_map.items():
       var_list.sort(key= lambda x: x[0])
-      for idx in range(len(var_list)-1):
-        print(var_list[idx][1]) 
-        op_list.append(gen_kv_variable_ops.re_assign(var_list[idx][1]._ref(), var_list[idx+1][1], self.partition_num_ph, idx, len(var_list)))
-    #print(op_list)
-
+      var_read = [var[2] for var in var_list]
+      try:
+        read_value = graph.get_tensor_by_name(var_name+"/ConcatPartitions/concat:0")
+      except:
+        read_value = array_ops.concat(var_read, axis=0) #partition_axis
+      for idx, var_meta in enumerate(var_list):
+        if var_meta[0] != var_meta[1]:
+          # print(read_value)
+          op_list.append(gen_kv_variable_ops.re_assign(var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
+        else:
+          # print(var_list[idx][2])
+          read_value = array_ops.concat(var_read, axis=0) #partition_axis
+          op_list.append(gen_kv_variable_ops.re_assign(var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
+    print(op_list)
     return op_list
 
   def _init_repartition_op(self):
