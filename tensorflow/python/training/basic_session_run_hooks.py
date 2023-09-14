@@ -44,6 +44,7 @@ from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.platform import gfile
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.training import incremental_saver
@@ -413,15 +414,17 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
             op_list = graph.get_operations()
             for op in op_list:
               op_name = op.device
-              idx = op_name.find("task:")
-              post_name = op_name[idx:]
-              post_idx = post_name.find("/")
-              if post_idx == -1:
-                if op_name[idx:] == "task:2":
-                  op._set_device("/job:ps/task:1")
-              else:
-                if post_name[:post_idx] == "task:2":
-                  op._set_device("/job:ps/task:1")
+              if "task:2" in op_name:
+                op._set_device("/job:ps/task:1/device:CPU:0")
+              # idx = op_name.find("task:")
+              # post_name = op_name[idx:]
+              # post_idx = post_name.find("/")
+              # if post_idx == -1:
+              #   if op_name[idx:] == "task:2":
+              #     op._set_device("/job:ps/task:1")
+              # else:
+              #   if post_name[:post_idx] == "task:2":
+              #     op._set_device("/job:ps/task:1")
             if self._task_index == "chief":
               try:
                 dataset_init = graph.get_operation_by_name("make_initializer")
@@ -518,12 +521,16 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
         read_value = array_ops.concat(var_read, axis=0) #partition_axis
       for idx, var_meta in enumerate(var_list):
         if var_meta[0] != var_meta[1]:
-          # print(read_value)
-          op_list.append(gen_kv_variable_ops.re_assign(var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
+          if resource_variable_ops.is_resource_variable(var_list[idx][2]):
+            op_list.append(gen_kv_variable_ops.re_assign_resource(var_list[idx][2], read_value, self.partition_num_ph, idx, len(var_list)))
+          else:
+            op_list.append(gen_kv_variable_ops.re_assign(var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
         else:
-          # print(var_list[idx][2])
           read_value = array_ops.concat(var_read, axis=0) #partition_axis
-          op_list.append(gen_kv_variable_ops.re_assign(var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
+          if resource_variable_ops.is_resource_variable(var_list[idx][2]):
+            op_list.append(gen_kv_variable_ops.re_assign_resource(var_list[idx][2], read_value, self.partition_num_ph, idx, len(var_list)))
+          else:
+            op_list.append(gen_kv_variable_ops.re_assign(var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
     print(op_list)
     return op_list
 

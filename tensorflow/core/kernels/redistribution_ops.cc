@@ -269,4 +269,96 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_KERNELS);
 // #undef REGISTER_GPU_KERNELS
 // #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
+// template <typename Device, typename T>
+// class ReAssignResourceOp : public OpKernel {
+//  public:
+//   explicit ReAssignResourceOp(OpKernelConstruction* context) : OpKernel(context) {
+//     OP_REQUIRES_OK(context,
+//                    context->GetAttr("use_locking", &use_exclusive_lock_));
+//     OP_REQUIRES_OK(context, context->GetAttr("partition_id", &partition_id_));
+//     OP_REQUIRES_OK(context, context->GetAttr("partition_nums", &num_partitions_));
+//     OP_REQUIRES(context, IsRefType(context->input_type(0)),
+//                 errors::InvalidArgument("lhs input needs to be a ref type"));
+//   }
+  
+//   void Compute(OpKernelContext* context) override {
+//     const Tensor& part_num_tensor = context->input(2);
+//     int new_num_part = part_num_tensor.flat<int32>()(0);
+
+//     {
+//       const Tensor& value = context->input(1);
+//       core::RefCountPtr<Var> variable;
+//       OP_REQUIRES_OK(context, LookupOrCreateResource<Var>(
+//                                   context, HandleFromInput(context, 0), &variable,
+//                                   [](Var** ptr) {
+//                                     // Created on host.
+//                                     *ptr = new Var(DT_VARIANT);
+//                                     return Status::OK();
+//                                   }));
+//       const Tensor& rhs = context->input(1);
+
+//       TensorShape new_shape = old_lhs.shape();
+//       if (new_num_part > num_partitions_) {
+//         new_shape.set_dim(0, (rhs.shape().dim_size(0) - new_shape.dim_size(0) * (new_num_part - num_partitions_)) / new_num_part);
+//         LOG(INFO) << "scale up new shape " << new_shape.dim_size(0) << " ---- " << rhs.shape().dim_size(0);
+//       } else {
+//         new_shape.set_dim(0, rhs.shape().dim_size(0) / new_num_part);
+//         LOG(INFO) << "scale down new shape " << new_shape.dim_size(0) << " ---- " << rhs.shape().dim_size(0);
+//       }
+      
+
+//       // Otherwise, create a new persistent tensor whose shape matches the
+//       // right hand side, hand off to lhs and copy the rhs into it.
+//       PersistentTensor copy;
+//       Tensor* copyTensor = nullptr;
+//       AllocatorAttributes attr;
+//       OP_REQUIRES_OK(
+//           context, context->allocate_persistent(old_lhs.dtype(), new_shape,
+//                                                 &copy, &copyTensor, attr));
+//       // We track memory of variables in variable ops instead of in this
+//       // assign op.
+//       context->clear_recorded_memory();
+//       context->replace_ref_input(0, *copyTensor, /* lock_held */ true);
+//       if (use_exclusive_lock_) {
+//         Copy(context, copyTensor, rhs, new_num_part);
+//         return;
+//       }
+//       // The tensor has already been initialized and the right hand side
+//       // matches the left hand side's shape. We have been told to do the
+//       // copy outside the lock.
+//       Copy(context, copyTensor, rhs, new_num_part);
+//     }
+//   }
+
+//  private:
+//   void Copy(OpKernelContext* context, Tensor* output, 
+//             const Tensor& rhs, int new_partition_nums) {
+//     if (new_partition_nums > num_partitions_) {
+//       functor::CustomScaleUp<Device, T> copy;
+//       copy(context->eigen_device<Device>(), output->flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums);
+//     } else {
+//       if (partition_id_ == new_partition_nums) return;
+//       functor::CustomScaleDown<Device, T> copy;
+//       copy(context->eigen_device<Device>(), output->flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums);
+//     }
+
+//   }
+
+//  private:
+//   bool use_exclusive_lock_;
+//   int partition_id_;
+//   int num_partitions_;
+// };
+
+// typedef Eigen::ThreadPoolDevice CPUDevice;
+// typedef Eigen::GpuDevice GPUDevice;
+
+// #define REGISTER_KERNELS(type)                                       \
+//   REGISTER_KERNEL_BUILDER(                                           \
+//       Name("ReAssignResource").Device(DEVICE_CPU).TypeConstraint<type>("T"), \
+//       ReAssignResourceOp<CPUDevice, type>);
+
+// TF_CALL_REAL_NUMBER_TYPES(REGISTER_KERNELS);
+// #undef REGISTER_KERNELS
+
 } // namespace tensorflow

@@ -315,6 +315,31 @@ REGISTER_OP("ReAssign")
       return Status::OK();
     });
 
+REGISTER_OP("ReAssignResource")
+    .Input("old: Ref(T)")
+    .Input("new: T")
+    .Input("new_partition_nums: int32")
+    .Output("output_ref: Ref(T)")
+    .Attr("partition_id: int = 0")
+    .Attr("partition_nums: int >= 1 = 1")
+    .Attr("T: type")
+    .Attr("validate_shape: bool = false")
+    .Attr("use_locking: bool = true")
+    .SetAllowsUninitializedInput()
+    .SetShapeFn([](InferenceContext* c) {
+      bool validate_shape;
+      TF_RETURN_IF_ERROR(c->GetAttr("validate_shape", &validate_shape));
+      if (validate_shape) {
+        return shape_inference::MergeBothInputsShapeFn(c);
+      }
+
+      // for ( int i = 0; i < num_lookups; ++i) {
+      //   c->set_output(0, c->input(1));
+      // }
+
+      return Status::OK();
+    });
+
 REGISTER_OP("KvResourceInitCacheStrategyOp")
     .Input("resource: resource")
     .Attr("cache_strategy: int = 1")

@@ -38,6 +38,18 @@ namespace tensorflow {
 
 int ElasticTrainingPass::cur_partition_nums_ = 0;
 
+inline string NewDeviceName(Node* node, int i) {
+  auto device_name =
+      node->assigned_device_name();  // std::string("/job:ps/replica:0/task:0/device:CPU:2");
+  std::string task_str = "task:";
+  auto idx_begin = device_name.rfind(task_str);
+  auto idx_end = device_name.find("device:", idx_begin);
+  std::string new_device_name =
+      device_name.substr(0, idx_begin + task_str.size()) +
+      std::to_string(i) + device_name.substr(idx_end - 1);
+  return new_device_name;
+}
+
 inline bool FindNode(Node* src, const string& target) {
  for (auto* o_node: src->out_nodes()) {
    if (o_node->type_string() == target) {
@@ -97,7 +109,7 @@ Status ElasticTrainingPass::Run(const GraphOptimizationPassOptions& options) {
     cur_partition_nums_ = partition_nums;
     return Status::OK();
   } else if (cur_partition_nums_ == partition_nums) {
-    LOG(INFO) << "No need to redistribution";
+    LOG(INFO) << "No need to do elastic partition pass.";
     return Status::OK();
   } else {
     scaling_up_ = true ? partition_nums > cur_partition_nums_ : partition_nums < cur_partition_nums_;
@@ -143,14 +155,20 @@ Status ElasticTrainingPass::InitVarMeta(
       var_type = VarType::EMBEDDING_VAR;
     } else if (node->type_string() == kVariableOp) {
       if (IsRefType(node->output_type(0))) {
-        var_type = VarType::REF_VAR;
+        var_type = VarType::DENSE_LAYER_VAR;
+        for (auto* o_node : node->out_nodes()) {
+          if (o_node->type_string() == "ReAssign") {
+            TF_RETURN_IF_ERROR(
+                GetNodeAttr(o_node->attrs(), "partition_id", &device_idx));
+          }
+        }
       } else {
         var_type = VarType::RESOURCE_VAR;
-      }
-      for (auto* o_node : node->out_nodes()) {
-        if (o_node->type_string() == "ReAssign") {
-          TF_RETURN_IF_ERROR(
-              GetNodeAttr(o_node->attrs(), "partition_id", &device_idx));
+        for (auto* o_node : node->out_nodes()) {
+          if (o_node->type_string() == "ReAssignResource") {
+            TF_RETURN_IF_ERROR(
+                GetNodeAttr(o_node->attrs(), "partition_id", &device_idx));
+          }
         }
       }
     } else {
@@ -164,7 +182,7 @@ Status ElasticTrainingPass::InitVarMeta(
       auto post_idx = post_str.find("/");
       if (post_idx == string::npos) {
         if (var_type == VarType::EMBEDDING_VAR) device_idx = std::stoi(post_str);
-        LOG(INFO) << "primary_node_metas_map emplace: " << pre_str 
+        LOG(INFO) << "InitVarMeta::primary_node_metas_map emplace: " << pre_str 
                   << " device_id: " << device_idx;
         if (primary_node_metas_map.find(pre_str) ==
             primary_node_metas_map.end()) {
@@ -180,7 +198,7 @@ Status ElasticTrainingPass::InitVarMeta(
         var_type_map.emplace(pre_str, var_type);
         // exactly once
         if (device_idx == 0) {
-          LOG(INFO) << "primary string : " << pre_str;
+          LOG(INFO) << "InitVarMeta::primary_node_to_opt_map primary string : " << pre_str;
           if (primary_node_to_opt_map.find(pre_str) ==
               primary_node_to_opt_map.end()) {
             primary_node_to_opt_map.emplace(pre_str, std::vector<string>{});
@@ -189,7 +207,7 @@ Status ElasticTrainingPass::InitVarMeta(
       } else {
         if (var_type == VarType::EMBEDDING_VAR) device_idx = std::stoi(post_str.substr(0, post_idx));
         string opt_name = pre_str + post_str.substr(post_idx);
-        LOG(INFO) << "primary_node_metas_map emplace: " << opt_name 
+        LOG(INFO) << "InitVarMeta::primary_node_metas_map emplace: " << opt_name 
                   << " device_id: " << device_idx;
         if (primary_node_metas_map.find(opt_name) ==
             primary_node_metas_map.end()) {
@@ -207,13 +225,13 @@ Status ElasticTrainingPass::InitVarMeta(
         if (device_idx == 0) {
           auto sep_idx = opt_name.rfind("/");
           string primary_ev_name = opt_name.substr(0, sep_idx);
-          LOG(INFO) << "primary string : " << pre_str
-                    << " opt string: " << opt_name;
           if (primary_node_to_opt_map.find(pre_str) ==
               primary_node_to_opt_map.end()) {
             primary_node_to_opt_map.emplace(pre_str,
                                             std::vector<string>{opt_name});
           } else {
+            LOG(INFO) << "InitVarMeta::primary_node_to_opt_map primary string : " << pre_str
+                    << " opt string: " << opt_name;
             primary_node_to_opt_map[pre_str].emplace_back(opt_name);
           }
         }
@@ -243,7 +261,7 @@ Status ElasticTrainingPass::RewriteSavingSubGraph(
     return Status::OK();
   }
 
-  std::vector<Node*> nodes_to_delete;
+  std::unordered_set<Node*> nodes_to_delete;
   std::unordered_map<string, std::vector<int64>> variable_shape;
   Node* shape_and_slice_node;
   TF_RETURN_IF_ERROR(save_node_vec[0]->input_node(2, &shape_and_slice_node));
@@ -308,7 +326,7 @@ Status ElasticTrainingPass::RewriteSavingSubGraph(
     TF_RETURN_IF_ERROR(ori_save_node->input_node(1, &tensor_names));
     Node* shape_and_slices;
     TF_RETURN_IF_ERROR(ori_save_node->input_node(2, &shape_and_slices));
-    nodes_to_delete.emplace_back(shape_and_slices);
+    nodes_to_delete.insert(shape_and_slices);
     Tensor tensor_name_t;
     TF_RETURN_IF_ERROR(
         GetNodeAttr(tensor_names->attrs(), "value", &tensor_name_t));
@@ -390,7 +408,7 @@ Status ElasticTrainingPass::RewriteSavingSubGraph(
             .Finalize(&shape_slice_node_def));
     Node* shape_slice_node = g->AddNode(shape_slice_node_def, &s);
     TF_RETURN_IF_ERROR(s);
-    g->UpdateEdge(shape_slice_node, 0, ori_save_node, 2);
+    TF_RETURN_IF_ERROR(g->UpdateEdge(shape_slice_node, 0, ori_save_node, 2));
     return s;
   };
 
@@ -719,7 +737,7 @@ Status ElasticTrainingPass::RewriteSavingSubGraph(
           TF_RETURN_IF_ERROR(cur_save_node->input_node(0, &sharded_filename));
           for (auto* o_node : sharded_filename->out_nodes()) {
             if (o_node->type_string() == kIdentityOp) {
-              nodes_to_delete.emplace_back(o_node);
+              nodes_to_delete.insert(o_node);
             } else if (o_node->type_string() == "Pack") {
               int part_num;
               TF_RETURN_IF_ERROR(GetNodeAttr(o_node->attrs(), "N", &part_num));
@@ -729,35 +747,35 @@ Status ElasticTrainingPass::RewriteSavingSubGraph(
               }
             }
           }
-          nodes_to_delete.emplace_back(sharded_filename);
+          nodes_to_delete.insert(sharded_filename);
         }
 
         {
           Node* tensor_names;
           TF_RETURN_IF_ERROR(cur_save_node->input_node(1, &tensor_names));
           string ori_tensor_names = tensor_names->name();
-          nodes_to_delete.emplace_back(tensor_names);
+          nodes_to_delete.insert(tensor_names);
         }
 
         {
           Node* shape_and_slices;
           TF_RETURN_IF_ERROR(cur_save_node->input_node(2, &shape_and_slices));
           string ori_shape_and_slices = shape_and_slices->name();
-          nodes_to_delete.emplace_back(shape_and_slices);
+          nodes_to_delete.insert(shape_and_slices);
         }
 
         {
           Node* ev_names;
           TF_RETURN_IF_ERROR(cur_save_node->input_node(3, &ev_names));
-          nodes_to_delete.emplace_back(ev_names);
+          nodes_to_delete.insert(ev_names);
         }
 
         {
           Node* ev_resource;
           TF_RETURN_IF_ERROR(cur_save_node->input_node(4, &ev_resource));
-          g->RemoveNode(ev_resource);
+          nodes_to_delete.insert(ev_resource);
         }
-        nodes_to_delete.emplace_back(cur_save_node);
+        nodes_to_delete.insert(cur_save_node);
       }
     }
   }
@@ -779,17 +797,26 @@ Status ElasticTrainingPass::RewriteTrainingSubGraph(
   std::vector<Node*> no_op_vec(cur_partition_nums_, nullptr);
   std::vector<Node*> init_op_vec(cur_partition_nums_, nullptr);
   Node* import_op_main;
+  Node* init_op_main;
+  bool initialized = false;
   for (auto* node : g->nodes()) {
     if (node->name() == "elastic_subgraph_import") {
       import_op_main = node;
+    } else if (node->name() == "elastic_subgraph_init") {
+      init_op_main = node;
     }
   }
+
+  // for (int i = 0; i < cur_partition_nums_; ++i) {
+  //   auto& var_vec = node_to_origin_map[primary_variable_name];
+    
+  // }
 
   for (auto it : primary_node_to_opt_map) {
     auto primary_variable_name = it.first;
     auto opt_ev_names = it.second;
     auto is_ev = var_type_map[primary_variable_name] == VarType::EMBEDDING_VAR;
-    std::vector<Node*> nodes_to_delete;
+    std::unordered_set<Node*> nodes_to_delete;
     auto& var_vec = node_to_origin_map[primary_variable_name];
 
     // Make sure the opt variable is sorted by part.
@@ -814,532 +841,548 @@ Status ElasticTrainingPass::RewriteTrainingSubGraph(
               });
 
     int ev_partition_num = primary_node_metas_map[primary_variable_name];
-    // TODO(JUNQI) : per variable placement strategy
 
-    if (ev_partition_num == cur_partition_nums_) {
-      continue;  // Do nothing
-    } else if (ev_partition_num < cur_partition_nums_) {
-      for (int i = ev_partition_num; i < cur_partition_nums_; ++i) {
-        LOG(INFO) << "SCALING UP MAIN";
-        Node* var_node = var_vec[0];
-        std::string op_name =
-            primary_variable_name + "/" + kPart + std::to_string(i);
-        auto device_name =
-            var_node->assigned_device_name();  // std::string("/job:ps/replica:0/task:0/device:CPU:2");
-        std::string task_str = "task:";
-        auto idx_begin = device_name.rfind(task_str);
-        auto idx_end = device_name.find("device:", idx_begin);
-        std::string new_device_name =
-            device_name.substr(0, idx_begin + task_str.size()) +
-            std::to_string(i) + device_name.substr(idx_end - 1);
-        Node* cur_init_op = init_op_vec[i];
-        if (cur_init_op == nullptr) {
-          Status s;
-          NodeDef initop_def;
-          TF_RETURN_IF_ERROR(
-              NodeDefBuilder("new_sub_graph/InitOp_" + std::to_string(i),
-                             "NoOp")
-                  .Device(new_device_name)
-                  .Finalize(&initop_def));
-          Node* init_node = g->AddNode(initop_def, &s);
-          TF_RETURN_IF_ERROR(s);
-          init_op_vec[i] = init_node;
-          cur_init_op = init_node;
-        }
-
-        if (is_ev) {
-          // EVHandler
-          Node* new_ev_node = CopyNode(g, var_node, new_device_name, op_name);
-          new_ev_node->ClearAttr("shared_name");
-          new_ev_node->AddAttr("shared_name", op_name);
-          var_vec[i] = new_ev_node;
-
-          LOG(INFO) << "JUNQI EV ===>" << primary_variable_name << " === " << i;
-
-          Node* primary_init_node;
-          // InitializeEVResource
-          for (auto* o_node : var_node->out_nodes()) {
-            if (o_node->type_string() == kEvInitOp) {
-              const Node* tmp_check_ev_0;
-              TF_RETURN_IF_ERROR(o_node->input_node(0, &tmp_check_ev_0));
-              const Node* tmp_check_ev_1;
-              TF_RETURN_IF_ERROR(o_node->input_node(1, &tmp_check_ev_1));
-              if (tmp_check_ev_0->name() != tmp_check_ev_1->name()) continue;
-
-              primary_init_node =
-                  CopyNode(g, o_node, new_device_name,
-                           new_ev_node->name() + "/InitializeKvVariableV2Op");
-              g->AddEdge(new_ev_node, 0, primary_init_node, 0);
-              g->AddEdge(new_ev_node, 0, primary_init_node, 1);
-              // init_value
-              const Edge* init_value_edge = nullptr;
-              TF_RETURN_IF_ERROR(o_node->input_edge(2, &init_value_edge));
-              auto* init_value_node = CopyNode(
-                  g, init_value_edge->src(), new_device_name,
-                  new_ev_node->name() + "/" + init_value_edge->src()->name());
-              g->AddEdge(init_value_node, init_value_edge->src_output(),
-                         primary_init_node, 2);
-
-              // empty_key
-              const Edge* empty_key_edge = nullptr;
-              TF_RETURN_IF_ERROR(o_node->input_edge(3, &empty_key_edge));
-              auto* empty_key_node = CopyNode(
-                  g, empty_key_edge->src(), new_device_name,
-                  new_ev_node->name() + "/" + empty_key_edge->src()->name());
-              g->AddEdge(empty_key_node, empty_key_edge->src_output(),
-                         primary_init_node, 3);
-              break;
-            }
-          }
-          g->AddControlEdge(primary_init_node, cur_init_op);
-
-          // KvResourceGather
-          for (auto* o_node : var_node->out_nodes()) {
-            if (o_node->type_string() == "KvResourceGather") {
-              Node* gather_op = CopyNode(g, o_node, new_device_name,
-                                         NewNodeName(o_node->name(), i));
-              g->AddEdge(new_ev_node, 0, gather_op, 0);
-              const Edge* gather_id_edge = nullptr;
-              TF_RETURN_IF_ERROR(o_node->input_edge(1, &gather_id_edge));
-              g->AddEdge(gather_id_edge->src(), gather_id_edge->src_output(),
-                         gather_op, 1);
-              const Edge* axis_edge = nullptr;
-              TF_RETURN_IF_ERROR(o_node->input_edge(2, &axis_edge));
-              Node* axis = CopyNode(
-                  g, axis_edge->src(), new_device_name,
-                  new_ev_node->name() + "/" + axis_edge->src()->name());
-              g->AddEdge(axis, 0, gather_op, 2);
-              for (auto* o_edge : o_node->out_edges()) {
-                if (o_edge->dst()->type_string() == kIdentityOp) {
-                  Node* identity_op =
-                      CopyNode(g, o_edge->dst(), new_device_name, NewNodeName(o_edge->dst()->name(), i));
-                  g->AddEdge(gather_op, 0, identity_op, 0);
-                }
-              }
-            }
-          }
-
-          // OptEV
-          for (auto& opt_ev_name : opt_ev_names) {
-            auto opt_var_node = node_to_origin_map[opt_ev_name][0];
-            auto sep_idx = opt_ev_name.rfind("/");
-            std::string op_name = opt_ev_name.substr(0, sep_idx) + "/" + kPart +
-                                  std::to_string(i) +
-                                  opt_ev_name.substr(sep_idx);
-
-            // EVHandler
-            Node* new_opt_ev_node =
-                CopyNode(g, opt_var_node, new_device_name, op_name);
-            new_opt_ev_node->ClearAttr("shared_name");
-            new_opt_ev_node->AddAttr("shared_name", op_name);
-
-            LOG(INFO) << "JUNQI  EV BACKWARD ===>" << opt_ev_name
-                      << " === " << i;
-            node_to_origin_map[opt_ev_name][i] = new_opt_ev_node;
-
-            // InitializeEVResource
-            for (auto* o_node : opt_var_node->out_nodes()) {
-              if (o_node->type_string() == kEvInitOp) {
-                Node* init_node =
-                    CopyNode(g, o_node, new_device_name,
-                             new_opt_ev_node->name() + "/" + o_node->name());
-                g->AddEdge(new_opt_ev_node, 0, init_node, 0);
-
-                g->AddEdge(new_ev_node, 0, init_node, 1);
-                g->AddControlEdge(primary_init_node, init_node);
-                g->AddControlEdge(init_node, cur_init_op);
-                // init_value
-                const Edge* init_value_edge = nullptr;
-                TF_RETURN_IF_ERROR(o_node->input_edge(2, &init_value_edge));
-                auto* init_value_node =
-                    CopyNode(g, init_value_edge->src(), new_device_name,
-                             new_opt_ev_node->name() + "/" +
-                                 init_value_edge->src()->name());
-                g->AddEdge(init_value_node, init_value_edge->src_output(),
-                           init_node, 2);
-
-                // empty_key
-                const Edge* empty_key_edge = nullptr;
-                TF_RETURN_IF_ERROR(o_node->input_edge(3, &empty_key_edge));
-                Node* empty_key_node =
-                    CopyNode(g, empty_key_edge->src(), new_device_name, "");
-
-                g->AddEdge(empty_key_node, empty_key_edge->src_output(),
-                           init_node, 3);
-              }
-            }
-          }
-        } else {  // variable
-          Node* new_var_node = CopyNode(g, var_node, new_device_name, op_name);
-          node_to_origin_map[primary_variable_name][i] = new_var_node;
-          var_vec[i] = new_var_node;
-          LOG(INFO) << "JUNQI variable ===>" << primary_variable_name
-                    << " === " << i;
-          bool is_init = false;
-          for (auto* o_node : var_node->out_nodes()) {
-            if (o_node->type_string() == "Assign") {
-              if (is_init) continue;
-              is_init = true;
-              Node* new_var_init = CopyNode(g, o_node, new_device_name, "");
-              g->AddEdge(new_var_node, 0, new_var_init, 0);
-
-              const Edge* init_value_edge = nullptr;
-              TF_RETURN_IF_ERROR(o_node->input_edge(1, &init_value_edge));
-              Node* new_init_value =
-                  CopyNode(g, init_value_edge->src(), new_device_name, "");
-              g->AddEdge(new_init_value, 0, new_var_init, 1);
-              g->AddControlEdge(new_var_init, cur_init_op);
-            } else if (o_node->type_string() == kIdentityOp) {
-              Node* new_var_read = CopyNode(g, o_node, new_device_name, "");
-              g->AddEdge(new_var_node, 0, new_var_read, 0);
-              for (auto* oo_node : o_node->out_nodes()) {
-                // Normal Variable
-                if (oo_node->type_string() == "ConcatV2") {
-                  int N;
-                  TF_RETURN_IF_ERROR(GetNodeAttr(oo_node->attrs(), "N", &N));
-                  const Edge* axis_edge;
-                  TF_RETURN_IF_ERROR(oo_node->input_edge(N, &axis_edge));
-                  if (N != cur_partition_nums_) {
-                    oo_node->ClearAttr("N");
-                    oo_node->AddAttr("N", cur_partition_nums_);
-                  }
-                  g->AddEdge(axis_edge->src(), 0, oo_node, cur_partition_nums_);
-                  TF_RETURN_IF_ERROR(
-                      g->UpdateEdge(new_var_read, 0, oo_node, i));
-                  var_type_map[primary_variable_name] = VarType::DENSE_LAYER_VAR;
-                } else if (oo_node->type_string() == "GatherV2") {
-                  Node* new_gather = CopyNode(g, oo_node, new_device_name, "");
-                  g->AddEdge(new_var_read, 0, new_gather, 0);
-                  Node* axis_node = nullptr;
-                  TF_RETURN_IF_ERROR(oo_node->input_node(2, &axis_node));
-                  Node* new_axis_node =
-                      CopyNode(g, axis_node, new_device_name, "");
-                  g->AddEdge(new_axis_node, 0, new_gather, 2);
-                }
-              }
-            }
-          }
-
-
-          for (auto& opt_ev_name : opt_ev_names) {
-            auto var_node = node_to_origin_map[opt_ev_name][0];
-            auto sep_idx = opt_ev_name.rfind("/");
-            std::string op_name = opt_ev_name.substr(0, sep_idx) + "/" + kPart +
-                                  std::to_string(i) +
-                                  opt_ev_name.substr(sep_idx);
-
-            Node* new_opt_var_node =
-                CopyNode(g, var_node, new_device_name, op_name);
-
-            LOG(INFO) << "JUNQI  BACKWARD VAR ===>" << opt_ev_name
-                      << " === " << i;
-            node_to_origin_map[opt_ev_name][i] = new_opt_var_node;
-            is_init = false;
-            for (auto* o_node : var_node->out_nodes()) {
-              if (o_node->type_string() == "Assign") {
-                if (is_init) continue;
-                is_init = true;
-                Node* new_var_init = CopyNode(g, o_node, new_device_name, "");
-                g->AddEdge(new_opt_var_node, 0, new_var_init, 0);
-
-                const Edge* init_value_edge = nullptr;
-                TF_RETURN_IF_ERROR(o_node->input_edge(1, &init_value_edge));
-                Node* new_const_init =
-                    CopyNode(g, init_value_edge->src(), new_device_name, "");
-                g->AddEdge(new_const_init, 0, new_var_init, 1);
-                g->AddControlEdge(new_var_init, cur_init_op);
-              } else if (o_node->type_string() == kIdentityOp) {
-                Node* new_opt_var_read = CopyNode(g, o_node, new_device_name, "");
-                g->AddEdge(new_opt_var_node, 0, new_opt_var_read, 0);
-                for (auto* oo_node : o_node->out_nodes()) {
-                  // Normal Variable
-                  if (oo_node->type_string() == "ConcatV2") {
-                    int N;
-                    TF_RETURN_IF_ERROR(GetNodeAttr(oo_node->attrs(), "N", &N));
-                    const Edge* axis_edge;
-                    TF_RETURN_IF_ERROR(oo_node->input_edge(N, &axis_edge));
-                    if (N != cur_partition_nums_) {
-                      oo_node->ClearAttr("N");
-                      oo_node->AddAttr("N", cur_partition_nums_);
-                    }
-                    g->AddEdge(axis_edge->src(), 0, oo_node, cur_partition_nums_);
-                    TF_RETURN_IF_ERROR(
-                        g->UpdateEdge(new_opt_var_read, 0, oo_node, i));
-                    var_type_map[primary_variable_name] = VarType::DENSE_LAYER_VAR;
-                  }
-                }
-              }
-            }
-            // Status s;
-            // NodeDef identity_node_def;
-            // TF_RETURN_IF_ERROR(
-            //     NodeDefBuilder(new_opt_var_node->name() + "/Identity",
-            //                    "Identity")
-            //         .Input(new_opt_var_node->name(), 0,
-            //                RemoveRefType(new_opt_var_node->output_type(0)))
-            //         .Attr("T", RemoveRefType(new_opt_var_node->output_type(0)))
-            //         .Device(new_device_name)
-            //         .Finalize(&identity_node_def));
-            // Node* identity_node = g->AddNode(identity_node_def, &s);
-            // TF_RETURN_IF_ERROR(s);
-            // g->AddEdge(new_opt_var_node, 0, identity_node, 0);
-          }
-        }
+    if (!initialized) {
+      for (int i = 0; i < cur_partition_nums_; ++i) {
+        string new_device_name = NewDeviceName(var_vec[0], i);
+        LOG(INFO) << "JUNQI ==== > " << new_device_name;
+        Status s;
+        NodeDef initop_def;
+        TF_RETURN_IF_ERROR(
+            NodeDefBuilder("new_sub_graph/InitOp_" + std::to_string(i),
+                            "NoOp")
+                .Device(new_device_name)
+                .Finalize(&initop_def));
+        Node* init_node = g->AddNode(initop_def, &s);
+        TF_RETURN_IF_ERROR(s);
+        init_op_vec[i] = init_node;
+        g->AddControlEdge(init_op_vec[i], init_op_main);
       }
-    } else {  // scale down
-      for (int i = 0; i < ev_partition_num; ++i) {
-        Node* ev_node = node_to_origin_map[primary_variable_name][i];
-        if ( i < cur_partition_nums_) {
-          if (!is_ev) {
-            LOG(INFO) << "JUNQI SCALEDOWN VAR===>" << primary_variable_name
-                      << " === " << i << " === " << ev_node->name();
-            for (auto* o_node : ev_node->out_nodes()) {
-              if (o_node->type_string() == kIdentityOp) {
-                for (auto* o_edge : o_node->out_edges()) {
-                  // Normal Variable
-                  if (o_edge->dst()->type_string() == "ConcatV2") {
-                    int N;
-                    TF_RETURN_IF_ERROR(GetNodeAttr(o_edge->dst()->attrs(), "N", &N));
-                    if (N != cur_partition_nums_) {
-                      const Edge* axis_edge = nullptr;
-                      TF_RETURN_IF_ERROR(o_edge->dst()->input_edge(N, &axis_edge));
-                      g->AddEdge(axis_edge->src(), 0, o_edge->dst(), cur_partition_nums_);
-                      g->RemoveEdge(axis_edge);
-                      o_edge->dst()->ClearAttr("N");
-                      o_edge->dst()->AddAttr("N", cur_partition_nums_);
-                    }
-                    if (o_edge->dst_input() != i){
-                      g->AddEdge(o_node, 0, o_edge->dst(), i);
-                      g->RemoveEdge(o_edge);
-                      var_type_map[primary_variable_name] = VarType::DENSE_LAYER_VAR;
-                    }
-                  }
-                }
-              }
-            }
-            // for (auto& opt_ev_name : opt_ev_names) {
-            //   Node* opt_node = node_to_origin_map[opt_ev_name][i];
-            //   LOG(INFO) << "JUNQI SCALEDOWN BACKWARD VAR===>"
-            //             << primary_variable_name << " === " << i
-            //             << " === " << opt_node->name();
-            //   for (auto* o_node : opt_node->out_nodes()) {
-            //     if (o_node->type_string() == kIdentityOp) {
-            //       nodes_to_delete.emplace_back(o_node);
-            //     } else if (o_node->type_string() == "Assign") {
-            //       nodes_to_delete.emplace_back(o_node);
-            //     }
-            //   }
-            // }
-          }
-        } else {
-          if (is_ev) {
-            LOG(INFO) << "JUNQI SCALEDOWN EV===>" << primary_variable_name
-                      << " === " << i << " === " << ev_node->name();
-            // nodes_to_delete.emplace_back(ev_node);
-            for (auto* o_node : ev_node->out_nodes()) {
-              // InitializeEVResource
-              if (o_node->type_string() == kEvInitOp) {
-                const Node* tmp_check_ev_0;
-                TF_RETURN_IF_ERROR(o_node->input_node(0, &tmp_check_ev_0));
-                const Node* tmp_check_ev_1;
-                TF_RETURN_IF_ERROR(o_node->input_node(1, &tmp_check_ev_1));
-                if (tmp_check_ev_0->name() != tmp_check_ev_1->name()) continue;
-
-                nodes_to_delete.emplace_back(o_node);
-                const Edge* init_value_edge = nullptr;
-                TF_RETURN_IF_ERROR(o_node->input_edge(2, &init_value_edge));
-                nodes_to_delete.emplace_back(init_value_edge->src());
-                const Edge* empty_key_edge = nullptr;
-                TF_RETURN_IF_ERROR(o_node->input_edge(3, &empty_key_edge));
-                nodes_to_delete.emplace_back(empty_key_edge->src());
-              } else if (o_node->type_string() == "KvResourceGather") {
-                nodes_to_delete.emplace_back(o_node);
-                LOG(INFO) << "JUNQI DELETE ===>" << o_node->name();
-                for (auto* o_edge : o_node->out_edges()) {
-                  if (o_edge->dst()->type_string() == kIdentityOp) {
-                    nodes_to_delete.emplace_back(o_edge->dst());
-                    LOG(INFO) << "JUNQI DELETE ===>" << o_edge->dst()->name();
-                  }
-                }
-              } else {
-                //       nodes_to_delete.emplace_back(o_node);
-              }
-            }
-
-            for (auto& opt_ev_name : opt_ev_names) {
-              Node* ev_node = node_to_origin_map[opt_ev_name][i];
-              // nodes_to_delete.emplace_back(ev_node);
-              // InitializeEVResource
-              for (auto* o_node : ev_node->out_nodes()) {
-                if (o_node->type_string() == kEvInitOp) {
-                  nodes_to_delete.emplace_back(o_node);
-                  const Edge* init_value_edge = nullptr;
-                  TF_RETURN_IF_ERROR(o_node->input_edge(2, &init_value_edge));
-                  nodes_to_delete.emplace_back(init_value_edge->src());
-                  const Edge* empty_key_edge = nullptr;
-                  TF_RETURN_IF_ERROR(o_node->input_edge(3, &empty_key_edge));
-                  nodes_to_delete.emplace_back(empty_key_edge->src());
-                } else {
-                  // nodes_to_delete.emplace_back(o_node);
-                }
-              }
-            }
-          } else {
-            LOG(INFO) << "JUNQI SCALEDOWN VAR===>" << primary_variable_name
-                      << " === " << i << " === " << ev_node->name();
-            for (auto* o_node : ev_node->out_nodes()) {
-              if (o_node->type_string() == kIdentityOp) {
-                nodes_to_delete.emplace_back(o_node);
-                for (auto* oo_node : o_node->out_nodes()) {
-                  if (oo_node->type_string() == "GatherV2") {
-                    nodes_to_delete.emplace_back(oo_node);
-                    // TODO axis
-                  }
-                }
-              } else if (o_node->type_string() == "Assign") {
-                nodes_to_delete.emplace_back(o_node);
-              }
-            }
-            for (auto& opt_ev_name : opt_ev_names) {
-              Node* opt_node = node_to_origin_map[opt_ev_name][i];
-              LOG(INFO) << "JUNQI SCALEDOWN BACKWARD VAR===>"
-                        << primary_variable_name << " === " << i
-                        << " === " << opt_node->name();
-              for (auto* o_node : opt_node->out_nodes()) {
-                if (o_node->type_string() == kIdentityOp) {
-                  nodes_to_delete.emplace_back(o_node);
-                } else if (o_node->type_string() == "Assign") {
-                  nodes_to_delete.emplace_back(o_node);
-                }
-              }
-            }
-          }
-        }
-      }
+      initialized = true;
     }
 
-    LOG(INFO) << "PostProcessing --------- " << primary_variable_name;
-    // ev_vec.erase(std::remove(ev_vec.begin(), ev_vec.end(), nullptr),
-    // ev_vec.end());
-    if (!is_test) {
-      if (ev_partition_num < cur_partition_nums_) {
-        if (is_ev) {
-          std::vector<Node*> primary_ev_filters(cur_partition_nums_, nullptr);
+    // TODO(JUNQI) : per variable placement strategy
+    if (ev_partition_num == cur_partition_nums_) {
+      continue;
+    } else if (ev_partition_num < cur_partition_nums_) {
+      if (is_ev) {
+        TF_RETURN_IF_ERROR(ScalingUpForWardGraph(g, node_to_origin_map, nodes_to_delete,
+                                                primary_variable_name, opt_ev_names, init_op_vec, ev_partition_num));
+        std::vector<Node*> primary_ev_filters(cur_partition_nums_, nullptr);
+        TF_RETURN_IF_ERROR(ScalingUpRedistributionGraph(
+            g, var_vec, import_op_main, ev_partition_num, primary_ev_filters));
+        for (auto& opt_ev_name : opt_ev_names) {
           TF_RETURN_IF_ERROR(ScalingUpRedistributionGraph(
-              g, var_vec, import_op_main, ev_partition_num, primary_ev_filters));
-          for (auto& opt_ev_name : opt_ev_names) {
-            TF_RETURN_IF_ERROR(ScalingUpRedistributionGraph(
-                g, node_to_origin_map[opt_ev_name], import_op_main,
-                ev_partition_num, primary_ev_filters));
-          }
-        } else {
-          TF_RETURN_IF_ERROR(ScalingUpVarRedistributionGraph(
-              g, var_vec, import_op_main, ev_partition_num));
-          for (auto& opt_ev_name : opt_ev_names) {
-            TF_RETURN_IF_ERROR(ScalingUpVarRedistributionGraph(
-                g, node_to_origin_map[opt_ev_name], import_op_main,
-                ev_partition_num));
-          }
+              g, node_to_origin_map[opt_ev_name], import_op_main,
+              ev_partition_num, primary_ev_filters));
         }
-      } else if (cur_partition_nums_ < ev_partition_num) {
-        if (is_ev) {
-          TF_RETURN_IF_ERROR(
-              ScalingDownRedistributionGraph(g, var_vec, ev_partition_num));
-          for (auto& opt_ev_name : opt_ev_names) {
-            TF_RETURN_IF_ERROR(ScalingDownRedistributionGraph(
-                g, node_to_origin_map[opt_ev_name], ev_partition_num));
-          }
-        } else {
-          TF_RETURN_IF_ERROR(
-              ScalingDownVarRedistributionGraph(g, var_vec, ev_partition_num));
-          for (auto& opt_ev_name : opt_ev_names) {
-            TF_RETURN_IF_ERROR(ScalingDownVarRedistributionGraph(
-                g, node_to_origin_map[opt_ev_name], ev_partition_num));
-          }
-        }
-      }
-
-      if (var_type_map[primary_variable_name] != VarType::DENSE_LAYER_VAR) {
         Node* elastic_node = nullptr;
         Node* p_dynamic_stitch_node = nullptr;
         TF_RETURN_IF_ERROR(RewriteElasticPartitionGraph(
             g, is_ev, node_to_origin_map[primary_variable_name], &elastic_node,
-            &p_dynamic_stitch_node));
-        if (ev_partition_num < cur_partition_nums_) {
-          TF_RETURN_IF_ERROR(ScalingUpBackWardGraph(
-              g, is_ev, node_to_origin_map, primary_variable_name, opt_ev_names,
-              elastic_node, p_dynamic_stitch_node, no_op_vec,
-              ev_partition_num));
-        } else {
-          TF_RETURN_IF_ERROR(ScalingDownBackWardGraph(
-              g, is_ev, node_to_origin_map, primary_variable_name, opt_ev_names,
-              ev_partition_num));
-        }
+            &p_dynamic_stitch_node, nodes_to_delete));
+        TF_RETURN_IF_ERROR(ScalingUpBackWardGraph(
+            g, is_ev, node_to_origin_map, primary_variable_name, opt_ev_names,
+            elastic_node, p_dynamic_stitch_node, no_op_vec,
+            ev_partition_num));
       } else {
-
-        if (ev_partition_num < cur_partition_nums_) {
-          TF_RETURN_IF_ERROR(ScalingUpVarBackWardGraph(
-              g, node_to_origin_map, primary_variable_name, opt_ev_names,
-              no_op_vec, ev_partition_num));
-        } else {
-          // for (int i = 0; i < cur_partition_nums_; ++i) {
-          //   Node* ev_node = node_to_origin_map[primary_variable_name][i];
-          //   Node* cur_init_op = init_op_vec[i];
-          //   if (cur_init_op == nullptr) {
-          //     Status s;
-          //     NodeDef initop_def;
-          //     TF_RETURN_IF_ERROR(
-          //         NodeDefBuilder("new_sub_graph/InitOp_" + std::to_string(i),
-          //                       "NoOp")
-          //             .Device(ev_node->assigned_device_name())
-          //             .Finalize(&initop_def));
-          //     Node* init_node = g->AddNode(initop_def, &s);
-          //     TF_RETURN_IF_ERROR(s);
-          //     init_op_vec[i] = init_node;
-          //     cur_init_op = init_node;
-          //   }
-          //   for (auto* o_node : ev_node->out_nodes()) {
-          //     if (o_node->type_string() == "Assign") {
-          //       g->AddControlEdge(o_node, cur_init_op);
-          //     }
-          //   }
-          //   for (auto& opt_ev_name : opt_ev_names) {
-          //     Node* opt_node = node_to_origin_map[opt_ev_name][i];
-          //     LOG(INFO) << "JUNQI SCALEDOWN BACKWARD VAR===>"
-          //               << primary_variable_name << " === " << i
-          //               << " === " << opt_node->name();
-          //     for (auto* o_node : opt_node->out_nodes()) {
-          //       if (o_node->type_string() == "Assign") {
-          //          g->AddControlEdge(o_node, cur_init_op);
-          //       }
-          //     }
-          //   }
-          // }
-          TF_RETURN_IF_ERROR(ScalingDownVarBackWardGraph(
-              g, node_to_origin_map, primary_variable_name, opt_ev_names,
-              no_op_vec, ev_partition_num));
+        TF_RETURN_IF_ERROR(ScalingUpVarForWardGraph(g, node_to_origin_map, nodes_to_delete, var_type_map,
+                                                      primary_variable_name, opt_ev_names, init_op_vec, ev_partition_num));
+        TF_RETURN_IF_ERROR(ScalingUpVarRedistributionGraph(
+            g, var_vec, import_op_main, ev_partition_num));
+        for (auto& opt_ev_name : opt_ev_names) {
+          TF_RETURN_IF_ERROR(ScalingUpVarRedistributionGraph(
+              g, node_to_origin_map[opt_ev_name], import_op_main,
+              ev_partition_num));
         }
+        if (var_type_map[primary_variable_name] != VarType::DENSE_LAYER_VAR) {
+          Node* elastic_node = nullptr;
+          Node* p_dynamic_stitch_node = nullptr;
+          TF_RETURN_IF_ERROR(RewriteElasticPartitionGraph(
+              g, is_ev, node_to_origin_map[primary_variable_name], &elastic_node,
+              &p_dynamic_stitch_node, nodes_to_delete));
+        }
+        TF_RETURN_IF_ERROR(ScalingUpVarBackWardGraph(
+            g, node_to_origin_map, primary_variable_name, opt_ev_names,
+            no_op_vec, ev_partition_num));
+      }
+    } else {  // scale down
+      if (is_ev) {
+        TF_RETURN_IF_ERROR(ScalingDownForWardGraph(g, node_to_origin_map, nodes_to_delete,
+                                                   primary_variable_name, opt_ev_names, ev_partition_num));
+        TF_RETURN_IF_ERROR(
+            ScalingDownRedistributionGraph(g, var_vec, nodes_to_delete, ev_partition_num));
+        for (auto& opt_ev_name : opt_ev_names) {
+          TF_RETURN_IF_ERROR(ScalingDownRedistributionGraph(
+              g, node_to_origin_map[opt_ev_name], nodes_to_delete, ev_partition_num));
+        }
+        Node* elastic_node = nullptr;
+        Node* p_dynamic_stitch_node = nullptr;
+        TF_RETURN_IF_ERROR(RewriteElasticPartitionGraph(
+            g, is_ev, node_to_origin_map[primary_variable_name], &elastic_node,
+            &p_dynamic_stitch_node, nodes_to_delete));
+        TF_RETURN_IF_ERROR(ScalingDownBackWardGraph(
+            g, is_ev, node_to_origin_map, nodes_to_delete,
+            primary_variable_name, opt_ev_names, ev_partition_num));
+      } else {
+        TF_RETURN_IF_ERROR(ScalingDownVarForWardGraph(g, node_to_origin_map, nodes_to_delete, var_type_map,
+                                                      primary_variable_name, opt_ev_names, ev_partition_num));
+        TF_RETURN_IF_ERROR(
+            ScalingDownVarRedistributionGraph(g, var_vec, ev_partition_num));
+        for (auto& opt_ev_name : opt_ev_names) {
+          TF_RETURN_IF_ERROR(ScalingDownVarRedistributionGraph(
+              g, node_to_origin_map[opt_ev_name], ev_partition_num));
+        }
+        if (var_type_map[primary_variable_name] != VarType::DENSE_LAYER_VAR) {
+          Node* elastic_node = nullptr;
+          Node* p_dynamic_stitch_node = nullptr;
+          TF_RETURN_IF_ERROR(RewriteElasticPartitionGraph(
+              g, is_ev, node_to_origin_map[primary_variable_name], &elastic_node,
+              &p_dynamic_stitch_node, nodes_to_delete));
+        }
+        TF_RETURN_IF_ERROR(ScalingDownVarBackWardGraph(
+            g, node_to_origin_map, nodes_to_delete, primary_variable_name, opt_ev_names,
+            no_op_vec, ev_partition_num));
       }
     }
+
+    // ev_vec.erase(std::remove(ev_vec.begin(), ev_vec.end(), nullptr),
+    // ev_vec.end());
 
     for (auto* node : nodes_to_delete) {
-      if (node != nullptr) {
-        // LOG(INFO) << "DELETE ===> " << node->name();
-        g->RemoveNode(node);
-      }
+      LOG(INFO) << "DELETE ===> " << node->name();
+      g->RemoveNode(node);
     }
   }
 
-  for (auto* node : g->nodes()) {
-    if (node->name() == "elastic_subgraph_init") {
-      for (auto* ps_init_node : init_op_vec) {
-        if (ps_init_node != nullptr) {
-          g->AddControlEdge(ps_init_node, node);
+  return Status::OK();
+}
+
+Status ElasticTrainingPass::ScalingUpForWardGraph(Graph* g, 
+                                                  std::unordered_map<std::string, std::vector<Node*>>& node_to_origin_map,
+                                                  std::unordered_set<Node*>& nodes_to_delete,
+                                                  const std::string& primary_variable_name,
+                                                  const std::vector<std::string>& opt_ev_names,
+                                                  std::vector<Node*>& init_op_vec, int ev_partition_num) {
+  // EVHandler
+  auto& var_vec = node_to_origin_map[primary_variable_name];
+  for (int i = ev_partition_num; i < cur_partition_nums_; ++i) {
+    Node* cur_init_op = init_op_vec[i];
+    Node* var_node = var_vec[0];
+    string new_device_name = NewDeviceName(var_node, i);
+    LOG(INFO) << "JUNQI ==== > " << new_device_name;
+    std::string op_name =
+        primary_variable_name + "/" + kPart + std::to_string(i);
+
+    Node* new_ev_node = CopyNode(g, var_node, new_device_name, op_name);
+    new_ev_node->ClearAttr("shared_name");
+    new_ev_node->AddAttr("shared_name", op_name);
+    var_vec[i] = new_ev_node;
+
+    LOG(INFO) << "JUNQI EV ===>" << primary_variable_name << " === " << i;
+
+    Node* primary_init_node;
+    // InitializeEVResource
+    for (auto* o_node : var_node->out_nodes()) {
+      if (o_node->type_string() == kEvInitOp) {
+        const Node* tmp_check_ev_0;
+        TF_RETURN_IF_ERROR(o_node->input_node(0, &tmp_check_ev_0));
+        const Node* tmp_check_ev_1;
+        TF_RETURN_IF_ERROR(o_node->input_node(1, &tmp_check_ev_1));
+        if (tmp_check_ev_0->name() != tmp_check_ev_1->name()) continue;
+
+        primary_init_node =
+            CopyNode(g, o_node, new_device_name,
+                      new_ev_node->name() + "/InitializeKvVariableV2Op");
+        g->AddEdge(new_ev_node, 0, primary_init_node, 0);
+        g->AddEdge(new_ev_node, 0, primary_init_node, 1);
+        // init_value
+        const Edge* init_value_edge = nullptr;
+        TF_RETURN_IF_ERROR(o_node->input_edge(2, &init_value_edge));
+        auto* init_value_node = CopyNode(
+            g, init_value_edge->src(), new_device_name,
+            new_ev_node->name() + "/" + init_value_edge->src()->name());
+        g->AddEdge(init_value_node, init_value_edge->src_output(),
+                    primary_init_node, 2);
+
+        // empty_key
+        const Edge* empty_key_edge = nullptr;
+        TF_RETURN_IF_ERROR(o_node->input_edge(3, &empty_key_edge));
+        auto* empty_key_node = CopyNode(
+            g, empty_key_edge->src(), new_device_name,
+            new_ev_node->name() + "/" + empty_key_edge->src()->name());
+        g->AddEdge(empty_key_node, empty_key_edge->src_output(),
+                    primary_init_node, 3);
+        break;
+      }
+    }
+    g->AddControlEdge(primary_init_node, cur_init_op);
+
+    // KvResourceGather
+    for (auto* o_node : var_node->out_nodes()) {
+      if (o_node->type_string() == "KvResourceGather") {
+        Node* gather_op = CopyNode(g, o_node, new_device_name,
+                                    NewNodeName(o_node->name(), i));
+        g->AddEdge(new_ev_node, 0, gather_op, 0);
+        const Edge* gather_id_edge = nullptr;
+        TF_RETURN_IF_ERROR(o_node->input_edge(1, &gather_id_edge));
+        g->AddEdge(gather_id_edge->src(), gather_id_edge->src_output(),
+                    gather_op, 1);
+        const Edge* axis_edge = nullptr;
+        TF_RETURN_IF_ERROR(o_node->input_edge(2, &axis_edge));
+        Node* axis = CopyNode(
+            g, axis_edge->src(), new_device_name,
+            new_ev_node->name() + "/" + axis_edge->src()->name());
+        g->AddEdge(axis, 0, gather_op, 2);
+        for (auto* o_edge : o_node->out_edges()) {
+          if (o_edge->dst()->type_string() == kIdentityOp) {
+            Node* identity_op =
+                CopyNode(g, o_edge->dst(), new_device_name, NewNodeName(o_edge->dst()->name(), i));
+            g->AddEdge(gather_op, 0, identity_op, 0);
+          }
+        }
+      }
+    }
+
+    // OptEV
+    for (auto& opt_ev_name : opt_ev_names) {
+      auto opt_var_node = node_to_origin_map[opt_ev_name][0];
+      auto sep_idx = opt_ev_name.rfind("/");
+      std::string op_name = opt_ev_name.substr(0, sep_idx) + "/" + kPart +
+                            std::to_string(i) +
+                            opt_ev_name.substr(sep_idx);
+
+      // EVHandler
+      Node* new_opt_ev_node =
+          CopyNode(g, opt_var_node, new_device_name, op_name);
+      new_opt_ev_node->ClearAttr("shared_name");
+      new_opt_ev_node->AddAttr("shared_name", op_name);
+
+      LOG(INFO) << "JUNQI  EV BACKWARD ===>" << opt_ev_name
+                << " === " << i;
+      node_to_origin_map[opt_ev_name][i] = new_opt_ev_node;
+
+      // InitializeEVResource
+      for (auto* o_node : opt_var_node->out_nodes()) {
+        if (o_node->type_string() == kEvInitOp) {
+          Node* init_node =
+              CopyNode(g, o_node, new_device_name,
+                        new_opt_ev_node->name() + "/" + o_node->name());
+          g->AddEdge(new_opt_ev_node, 0, init_node, 0);
+
+          g->AddEdge(new_ev_node, 0, init_node, 1);
+          g->AddControlEdge(primary_init_node, init_node);
+          g->AddControlEdge(init_node, cur_init_op);
+          // init_value
+          const Edge* init_value_edge = nullptr;
+          TF_RETURN_IF_ERROR(o_node->input_edge(2, &init_value_edge));
+          auto* init_value_node =
+              CopyNode(g, init_value_edge->src(), new_device_name,
+                        new_opt_ev_node->name() + "/" +
+                            init_value_edge->src()->name());
+          g->AddEdge(init_value_node, init_value_edge->src_output(),
+                      init_node, 2);
+
+          // empty_key
+          const Edge* empty_key_edge = nullptr;
+          TF_RETURN_IF_ERROR(o_node->input_edge(3, &empty_key_edge));
+          Node* empty_key_node =
+              CopyNode(g, empty_key_edge->src(), new_device_name, "");
+
+          g->AddEdge(empty_key_node, empty_key_edge->src_output(),
+                      init_node, 3);
+        }
+      }
+    }    
+  }
+  return Status::OK();                                                  
+}
+Status ElasticTrainingPass::ScalingUpVarForWardGraph(Graph* g, 
+                                                      std::unordered_map<std::string, std::vector<Node*>>& node_to_origin_map,
+                                                      std::unordered_set<Node*>& nodes_to_delete,
+                                                      std::unordered_map<std::string, VarType>& var_type_map,
+                                                      const std::string& primary_variable_name,
+                                                      const std::vector<std::string>& opt_ev_names,
+                                                      std::vector<Node*>& init_op_vec, int ev_partition_num) {
+  auto& var_vec = node_to_origin_map[primary_variable_name];
+  for (int i = ev_partition_num; i < cur_partition_nums_; ++i) {
+    Node* var_node = var_vec[0];
+    Node* cur_init_op = init_op_vec[i];
+    string new_device_name = NewDeviceName(var_node, i);
+    LOG(INFO) << "JUNQI ==== > " << new_device_name;
+    std::string op_name =
+        primary_variable_name + "/" + kPart + std::to_string(i);
+    Node* new_var_node = CopyNode(g, var_node, new_device_name, op_name);
+    var_vec[i] = new_var_node;
+    LOG(INFO) << "JUNQI variable ===>" << primary_variable_name
+              << " === " << i;
+    bool is_init = false;
+    for (auto* o_node : var_node->out_nodes()) {
+      if (o_node->type_string() == "Assign") {
+        if (is_init) continue;
+        is_init = true;
+        Node* new_var_init = CopyNode(g, o_node, new_device_name, "");
+        g->AddEdge(new_var_node, 0, new_var_init, 0);
+
+        const Edge* init_value_edge = nullptr;
+        TF_RETURN_IF_ERROR(o_node->input_edge(1, &init_value_edge));
+        Node* new_init_value =
+            CopyNode(g, init_value_edge->src(), new_device_name, "");
+        g->AddEdge(new_init_value, 0, new_var_init, 1);
+        g->AddControlEdge(new_var_init, cur_init_op);
+      } else if (o_node->type_string() == kIdentityOp) {
+        Node* new_var_read = CopyNode(g, o_node, new_device_name, "");
+        g->AddEdge(new_var_node, 0, new_var_read, 0);
+        for (auto* oo_node : o_node->out_nodes()) {
+          // Normal Variable
+          if (oo_node->type_string() == "ConcatV2") {
+            int N;
+            TF_RETURN_IF_ERROR(GetNodeAttr(oo_node->attrs(), "N", &N));
+            const Edge* axis_edge;
+            TF_RETURN_IF_ERROR(oo_node->input_edge(N, &axis_edge));
+            if (N != cur_partition_nums_) {
+              oo_node->ClearAttr("N");
+              oo_node->AddAttr("N", cur_partition_nums_);
+            }
+            g->AddEdge(axis_edge->src(), 0, oo_node, cur_partition_nums_);
+            TF_RETURN_IF_ERROR(
+                g->UpdateEdge(new_var_read, 0, oo_node, i));
+          } else if (oo_node->type_string() == "GatherV2") {
+            Node* new_gather = CopyNode(g, oo_node, new_device_name, "");
+            g->AddEdge(new_var_read, 0, new_gather, 0);
+            Node* axis_node = nullptr;
+            TF_RETURN_IF_ERROR(oo_node->input_node(2, &axis_node));
+            Node* new_axis_node =
+                CopyNode(g, axis_node, new_device_name, "");
+            g->AddEdge(new_axis_node, 0, new_gather, 2);
+            var_type_map[primary_variable_name] = VarType::REF_VAR;
+          }
+        }
+      }
+    }
+
+    for (auto& opt_ev_name : opt_ev_names) {
+      auto var_node = node_to_origin_map[opt_ev_name][0];
+      auto sep_idx = opt_ev_name.rfind("/");
+      std::string op_name = opt_ev_name.substr(0, sep_idx) + "/" + kPart +
+                            std::to_string(i) +
+                            opt_ev_name.substr(sep_idx);
+
+      Node* new_opt_var_node =
+          CopyNode(g, var_node, new_device_name, op_name);
+
+      LOG(INFO) << "JUNQI  BACKWARD VAR ===>" << opt_ev_name
+                << " === " << i;
+      node_to_origin_map[opt_ev_name][i] = new_opt_var_node;
+      is_init = false;
+      for (auto* o_node : var_node->out_nodes()) {
+        if (o_node->type_string() == "Assign") {
+          if (is_init) continue;
+          is_init = true;
+          Node* new_var_init = CopyNode(g, o_node, new_device_name, "");
+          g->AddEdge(new_opt_var_node, 0, new_var_init, 0);
+
+          const Edge* init_value_edge = nullptr;
+          TF_RETURN_IF_ERROR(o_node->input_edge(1, &init_value_edge));
+          Node* new_const_init =
+              CopyNode(g, init_value_edge->src(), new_device_name, "");
+          g->AddEdge(new_const_init, 0, new_var_init, 1);
+          g->AddControlEdge(new_var_init, cur_init_op);
+        } else if (o_node->type_string() == kIdentityOp) {
+          Node* new_opt_var_read = CopyNode(g, o_node, new_device_name, "");
+          g->AddEdge(new_opt_var_node, 0, new_opt_var_read, 0);
+          for (auto* oo_node : o_node->out_nodes()) {
+            // Normal Variable
+            if (oo_node->type_string() == "ConcatV2") {
+              int N;
+              TF_RETURN_IF_ERROR(GetNodeAttr(oo_node->attrs(), "N", &N));
+              const Edge* axis_edge;
+              TF_RETURN_IF_ERROR(oo_node->input_edge(N, &axis_edge));
+              if (N != cur_partition_nums_) {
+                oo_node->ClearAttr("N");
+                oo_node->AddAttr("N", cur_partition_nums_);
+              }
+              g->AddEdge(axis_edge->src(), 0, oo_node, cur_partition_nums_);
+              TF_RETURN_IF_ERROR(
+                  g->UpdateEdge(new_opt_var_read, 0, oo_node, i));
+            }
+          }
+        }
+      }
+      // Status s;
+      // NodeDef identity_node_def;
+      // TF_RETURN_IF_ERROR(
+      //     NodeDefBuilder(new_opt_var_node->name() + "/Identity",
+      //                    "Identity")
+      //         .Input(new_opt_var_node->name(), 0,
+      //                RemoveRefType(new_opt_var_node->output_type(0)))
+      //         .Attr("T", RemoveRefType(new_opt_var_node->output_type(0)))
+      //         .Device(new_device_name)
+      //         .Finalize(&identity_node_def));
+      // Node* identity_node = g->AddNode(identity_node_def, &s);
+      // TF_RETURN_IF_ERROR(s);
+      // g->AddEdge(new_opt_var_node, 0, identity_node, 0);
+    }          
+  }        
+  return Status::OK();
+}
+
+Status ElasticTrainingPass::ScalingDownVarForWardGraph(Graph* g, 
+                                                      std::unordered_map<std::string, std::vector<Node*>>& node_to_origin_map,
+                                                      std::unordered_set<Node*>& nodes_to_delete,
+                                                      std::unordered_map<std::string, VarType>& var_type_map,
+                                                      const std::string& primary_variable_name,
+                                                      const std::vector<std::string>& opt_ev_names,
+                                                      int ev_partition_num) {
+  for (int i = 0; i < ev_partition_num; ++i) {
+    Node* ev_node = node_to_origin_map[primary_variable_name][i];
+    if ( i < cur_partition_nums_) {
+      LOG(INFO) << "JUNQI SCALEDOWN VAR===>" << primary_variable_name
+                << " === " << i << " === " << ev_node->name();
+      for (auto* o_node : ev_node->out_nodes()) {
+        if (o_node->type_string() == kIdentityOp) {
+          for (auto* o_edge : o_node->out_edges()) {
+            // Normal Variable
+            if (o_edge->dst()->type_string() == "ConcatV2") {
+              int N;
+              TF_RETURN_IF_ERROR(GetNodeAttr(o_edge->dst()->attrs(), "N", &N));
+              if (N != cur_partition_nums_) {
+                const Edge* axis_edge = nullptr;
+                TF_RETURN_IF_ERROR(o_edge->dst()->input_edge(N, &axis_edge));
+                g->AddEdge(axis_edge->src(), 0, o_edge->dst(), cur_partition_nums_);
+                g->RemoveEdge(axis_edge);
+                o_edge->dst()->ClearAttr("N");
+                o_edge->dst()->AddAttr("N", cur_partition_nums_);
+              }
+              if (o_edge->dst_input() != i){
+                g->AddEdge(o_node, 0, o_edge->dst(), i);
+                g->RemoveEdge(o_edge);
+              }
+            }
+          }
+        }
+      }
+      for (auto& opt_ev_name : opt_ev_names) {
+        Node* opt_node = node_to_origin_map[opt_ev_name][i];
+        LOG(INFO) << "JUNQI SCALEDOWN BACKWARD VAR===>"
+                  << primary_variable_name << " === " << i
+                  << " === " << opt_node->name();
+        for (auto* o_node : opt_node->out_nodes()) {
+          if (o_node->type_string() == kIdentityOp) {
+            for (auto* o_edge : o_node->out_edges()) {
+              if (o_edge->dst()->type_string() == "ConcatV2") {
+                int N;
+                TF_RETURN_IF_ERROR(GetNodeAttr(o_edge->dst()->attrs(), "N", &N));
+                if (N != cur_partition_nums_) {
+                  const Edge* axis_edge = nullptr;
+                  TF_RETURN_IF_ERROR(o_edge->dst()->input_edge(N, &axis_edge));
+                  g->AddEdge(axis_edge->src(), 0, o_edge->dst(), cur_partition_nums_);
+                  g->RemoveEdge(axis_edge);
+                  o_edge->dst()->ClearAttr("N");
+                  o_edge->dst()->AddAttr("N", cur_partition_nums_);
+                }
+                if (o_edge->dst_input() != i){
+                  g->AddEdge(o_node, 0, o_edge->dst(), i);
+                  g->RemoveEdge(o_edge);
+                }
+              }
+            }
+          } 
+        }
+      }
+    } else {
+      LOG(INFO) << "JUNQI SCALEDOWN VAR ===>" << primary_variable_name
+                << " === " << i << " === " << ev_node->name();
+      for (auto* o_node : ev_node->out_nodes()) {
+        if (o_node->type_string() == kIdentityOp) {
+          nodes_to_delete.insert(o_node);
+          for (auto* oo_node : o_node->out_nodes()) {
+            if (oo_node->type_string() == "GatherV2") {
+              nodes_to_delete.insert(oo_node);
+              var_type_map[primary_variable_name] = VarType::REF_VAR;
+              // TODO axis
+            }
+          }
+        } else if (o_node->type_string() == "Assign") {
+          nodes_to_delete.insert(o_node);
+        }
+      }
+      for (auto& opt_ev_name : opt_ev_names) {
+        Node* opt_node = node_to_origin_map[opt_ev_name][i];
+        LOG(INFO) << "JUNQI SCALEDOWN BACKWARD VAR ===>"
+                  << primary_variable_name << " === " << i
+                  << " === " << opt_node->name();
+        for (auto* o_node : opt_node->out_nodes()) {
+          if (o_node->type_string() == kIdentityOp) {
+            nodes_to_delete.insert(o_node);
+          } else if (o_node->type_string() == "Assign") {
+            nodes_to_delete.insert(o_node);
+          }
         }
       }
     }
   }
+  return Status::OK();
+}
 
+Status ElasticTrainingPass::ScalingDownForWardGraph(Graph* g, 
+                                                    std::unordered_map<std::string, std::vector<Node*>>& node_to_origin_map,
+                                                    std::unordered_set<Node*>& nodes_to_delete,
+                                                    const std::string& primary_ev_name,
+                                                    const std::vector<std::string>& opt_ev_names,
+                                                    int ev_partition_num) {
+  for (int i = cur_partition_nums_; i < ev_partition_num; ++i) {
+    Node* var_node = node_to_origin_map[primary_ev_name][i];
+    LOG(INFO) << "JUNQI SCALEDOWN EV ===>" << primary_ev_name
+              << " ===== " << i << " === " << var_node->name();
+    // nodes_to_delete.insert(ev_node);
+    for (auto* o_node : var_node->out_nodes()) {
+      // InitializeEVResource
+      if (o_node->type_string() == kEvInitOp) {
+        const Node* tmp_check_ev_0;
+        TF_RETURN_IF_ERROR(o_node->input_node(0, &tmp_check_ev_0));
+        const Node* tmp_check_ev_1;
+        TF_RETURN_IF_ERROR(o_node->input_node(1, &tmp_check_ev_1));
+        if (tmp_check_ev_0->name() != tmp_check_ev_1->name()) continue;
+
+        nodes_to_delete.insert(o_node);
+        const Edge* init_value_edge = nullptr;
+        TF_RETURN_IF_ERROR(o_node->input_edge(2, &init_value_edge));
+        nodes_to_delete.insert(init_value_edge->src());
+        const Edge* empty_key_edge = nullptr;
+        TF_RETURN_IF_ERROR(o_node->input_edge(3, &empty_key_edge));
+        nodes_to_delete.insert(empty_key_edge->src());
+      } else if (o_node->type_string() == "KvResourceGather") {
+        nodes_to_delete.insert(o_node);
+        for (auto* o_edge : o_node->out_edges()) {
+          if (o_edge->dst()->type_string() == kIdentityOp) {
+            nodes_to_delete.insert(o_edge->dst());
+          }
+        }
+      } else {
+        //       nodes_to_delete.insert(o_node);
+      }
+    }
+
+    for (auto& opt_ev_name : opt_ev_names) {
+      Node* ev_node = node_to_origin_map[opt_ev_name][i];
+      // nodes_to_delete.insert(ev_node);
+      // InitializeEVResource
+      for (auto* o_node : ev_node->out_nodes()) {
+        if (o_node->type_string() == kEvInitOp) {
+          nodes_to_delete.insert(o_node);
+          const Edge* init_value_edge = nullptr;
+          TF_RETURN_IF_ERROR(o_node->input_edge(2, &init_value_edge));
+          nodes_to_delete.insert(init_value_edge->src());
+          const Edge* empty_key_edge = nullptr;
+          TF_RETURN_IF_ERROR(o_node->input_edge(3, &empty_key_edge));
+          nodes_to_delete.insert(empty_key_edge->src());
+        } else {
+          // nodes_to_delete.insert(o_node);
+        }
+      }
+    }
+  }
   return Status::OK();
 }
 
@@ -1398,7 +1441,7 @@ Status ElasticTrainingPass::ScalingUpBackWardGraph(
             LOG(INFO) << "Copying new unique node";
             new_unique =
                 CopyNode(g, i_node, new_device_name,
-                         NewNodeName(cur_ev_node->name() + "/Unique", i));
+                         cur_ev_node->name() + "/Unique");
             g->AddEdge(new_unique, 0, new_apply_node, j);
             // unique INPUT 0
             LOG(INFO) << "Copying reshape of unique input";
@@ -1406,7 +1449,7 @@ Status ElasticTrainingPass::ScalingUpBackWardGraph(
             TF_RETURN_IF_ERROR(i_node->input_node(0, &reshape_id));
             Node* new_reshape_id =
                 CopyNode(g, reshape_id, reshape_id->assigned_device_name(),
-                         NewNodeName(reshape_id->name(), i));
+                         "");
             g->AddEdge(new_reshape_id, 0, new_unique, 0);
 
             LOG(INFO) << "Copying RecordSparseIndices";
@@ -1457,7 +1500,7 @@ Status ElasticTrainingPass::ScalingUpBackWardGraph(
             */
             LOG(INFO) << "Copying new UnsortedSegmentSum node";
             Node* new_unsorted_segment = CopyNode(
-                g, i_node, new_device_name, NewNodeName(i_node->name(), i));
+                g, i_node, new_device_name, "");
             g->AddEdge(new_unsorted_segment, 0, new_apply_node, j);
             // Input 0
             {
@@ -1557,13 +1600,13 @@ Status ElasticTrainingPass::ScalingUpBackWardGraph(
               TF_RETURN_IF_ERROR(i_node->input_node(2, &strided_slice));
               Node* new_strided_slice =
                   CopyNode(g, strided_slice, new_device_name,
-                           NewNodeName(strided_slice->name(), i));
+                           "");
               g->AddEdge(new_strided_slice, 0, new_unsorted_segment, 2);
 
               Node* shape;
               TF_RETURN_IF_ERROR(strided_slice->input_node(0, &shape));
               Node* new_shape = CopyNode(g, shape, new_device_name,
-                                         NewNodeName(shape->name(), i));
+                                         "");
               g->AddEdge(new_unique, 0, new_shape, 0);
               g->AddEdge(new_shape, 0, new_strided_slice, 0);
 
@@ -1573,7 +1616,7 @@ Status ElasticTrainingPass::ScalingUpBackWardGraph(
                     strided_slice->input_node(k, &partial_strided_slice));
                 Node* new_node =
                     CopyNode(g, partial_strided_slice, new_device_name,
-                             NewNodeName(partial_strided_slice->name(), i));
+                             "");
                 g->AddEdge(new_node, 0, new_strided_slice, k);
               }
             }
@@ -1591,11 +1634,12 @@ Status ElasticTrainingPass::ScalingUpBackWardGraph(
 Status ElasticTrainingPass::ScalingDownVarBackWardGraph(
     Graph* g,
     std::unordered_map<std::string, std::vector<Node*>>& node_to_origin_map,
+    std::unordered_set<Node*>& nodes_to_delete,
     const std::string& primary_ev_name,
     const std::vector<std::string>& opt_ev_names, std::vector<Node*>& no_op_vec,
     int ev_partition_num) {
 
-  std::vector<Node*> nodes_to_delete;
+  
   for (int i = 0; i < ev_partition_num; ++i) {
     Node* cur_var_node = node_to_origin_map[primary_ev_name][i];
     if ( i < cur_partition_nums_) {
@@ -1614,7 +1658,7 @@ Status ElasticTrainingPass::ScalingDownVarBackWardGraph(
             int tensor_size = old_shape_tensor.NumElements();
             int old_part_shape = old_shape_tensor.flat<int>()(0);
             int new_part_shape = old_part_shape * ev_partition_num / cur_partition_nums_;
-            LOG(INFO) << " new part shape" << new_part_shape;
+            LOG(INFO) << "ScalingDownVarBackWardGraph:: new grad shape" << new_part_shape;
             Tensor shape_tensor;
             TensorProto tensor_shape_proto;
             tensor_shape_proto.set_dtype(DT_INT32);
@@ -1629,6 +1673,17 @@ Status ElasticTrainingPass::ScalingDownVarBackWardGraph(
             shape_tensor.FromProto(tensor_shape_proto);
             shape_node->ClearAttr("value");
             shape_node->AddAttr("value", shape_tensor);
+
+            Node* concat_offset_node;
+            TF_RETURN_IF_ERROR(concat_grad_node->input_node(1, &concat_offset_node));
+            const Edge* target_edge =nullptr;
+            for (auto *o_edge: shape_node->out_edges()) {
+              if (o_edge->dst() == concat_offset_node) {
+                target_edge = o_edge;
+              }
+            }
+            g->RemoveEdge(target_edge);
+            g->AddEdge(shape_node, 0, concat_offset_node, i+1);
           }
         }
       }
@@ -1636,18 +1691,16 @@ Status ElasticTrainingPass::ScalingDownVarBackWardGraph(
       for (auto* node : cur_var_node->out_nodes()) {
         if (node->IsApplyAdamOps() || node->IsApplyAdagradOps() ||
             node->IsApplyFtrlOps()) {
-          LOG(INFO) << "DEL new apply node";
-          nodes_to_delete.emplace_back(node);
+          nodes_to_delete.insert(node);
 
           Node* i_node;
           TF_RETURN_IF_ERROR(node->input_node(node->num_inputs() - 1, &i_node));
           if (i_node->type_string() == "Identity") {
-            LOG(INFO) << "DEL new grad node";
-            nodes_to_delete.emplace_back(i_node);
+            nodes_to_delete.insert(i_node);
 
             Node* concat_grad_node;
             TF_RETURN_IF_ERROR(i_node->input_node(0, &concat_grad_node));
-            nodes_to_delete.emplace_back(concat_grad_node);
+            nodes_to_delete.insert(concat_grad_node);
 
             Node* prev_grad_node;
             TF_RETURN_IF_ERROR(
@@ -1659,34 +1712,18 @@ Status ElasticTrainingPass::ScalingDownVarBackWardGraph(
             int part_num;
             TF_RETURN_IF_ERROR(
                 GetNodeAttr(concat_offset_node->attrs(), "N", &part_num));
-            if (part_num != cur_partition_nums_) {
+            Node* shape_node;
+            TF_RETURN_IF_ERROR(
+                concat_grad_node->input_node(2, &shape_node));
+            nodes_to_delete.insert(shape_node);
+
+            if (i == ev_partition_num-1) {
               concat_offset_node->ClearAttr("N");
               concat_offset_node->AddAttr("N", cur_partition_nums_);
             }
-
-            // Node* shape_node;
-            // TF_RETURN_IF_ERROR(concat_offset_node->input_node(1, &shape_node));
-            // nodes_to_delete.emplace_back(shape_node);
-            // g->AddEdge(new_shape_node, 0, concat_offset_node, i);
-
-            // g->AddEdge(new_shape_node, 0, new_concat_grad_node, 2);
-            // TODO Add control edge
-
-            // Node* control_node;
-            // TF_RETURN_IF_ERROR(i_node->input_node(1, &control_node));
-            // g->AddControlEdge(new_concat_grad_node, control_node);
-            // g->AddControlEdge(control_node, new_grad_node);
-
           } 
         }
       }
-    }
-  }
-
-  for (auto n : nodes_to_delete) {
-    if (n != nullptr) {
-      LOG(INFO) << "DELETE --------- Removing nodes from graph... " << n->name();
-      g->RemoveNode(n);
     }
   }
 
@@ -1696,47 +1733,43 @@ Status ElasticTrainingPass::ScalingDownVarBackWardGraph(
 Status ElasticTrainingPass::ScalingDownBackWardGraph(
     Graph* g, bool is_ev,
     std::unordered_map<std::string, std::vector<Node*>>& node_to_origin_map,
+    std::unordered_set<Node*>& nodes_to_delete,
     const std::string& primary_ev_name,
     const std::vector<std::string>& opt_ev_names, int ev_partition_num) {
 
-  Node* ev_node = node_to_origin_map[primary_ev_name][0];
-  std::vector<Node*> nodes_to_delete;
   for (int i = cur_partition_nums_; i < ev_partition_num; ++i) {
     Node* cur_ev_node = node_to_origin_map[primary_ev_name][i];
-    string new_device_name = cur_ev_node->assigned_device_name();
     for (auto* node : cur_ev_node->out_nodes()) {
       if (IsApplyNode(is_ev, node)) {
-        nodes_to_delete.emplace_back(node);
+        nodes_to_delete.insert(node);
         for (int j = node->num_inputs() - 1; j > opt_ev_names.size(); --j) {
           Node* i_node;
           TF_RETURN_IF_ERROR(node->input_node(j, &i_node));
           if (i_node->type_string() == "Unique") {
-            nodes_to_delete.emplace_back(i_node);
+            nodes_to_delete.insert(i_node);
             // unique INPUT 0
-            LOG(INFO) << "Copying reshape of unique input";
             Node* reshape_id;
             TF_RETURN_IF_ERROR(i_node->input_node(0, &reshape_id));
-            nodes_to_delete.emplace_back(reshape_id);
+            nodes_to_delete.insert(reshape_id);
 
-            LOG(INFO) << "Copying RecordSparseIndices";
             for (auto* o_node : reshape_id->out_nodes()) {
               if (o_node->type_string() == "RecordSparseIndices") {
-                nodes_to_delete.emplace_back(o_node);
+                nodes_to_delete.insert(o_node);
               }
             }
 
             Node* expand_dims;
             TF_RETURN_IF_ERROR(reshape_id->input_node(1, &expand_dims));
-            nodes_to_delete.emplace_back(expand_dims);
+            nodes_to_delete.insert(expand_dims);
 
             // expand dims INPUT
             Node* expand_dims_size;
             TF_RETURN_IF_ERROR(expand_dims->input_node(0, &expand_dims_size));
-            nodes_to_delete.emplace_back(expand_dims_size);
+            nodes_to_delete.insert(expand_dims_size);
 
             Node* expand_dims_dim;
             TF_RETURN_IF_ERROR(expand_dims->input_node(1, &expand_dims_dim));
-            nodes_to_delete.emplace_back(expand_dims_dim);
+            nodes_to_delete.insert(expand_dims_dim);
 
           } else if (i_node->type_string() == "UnsortedSegmentSum") {
             /*
@@ -1748,81 +1781,70 @@ Status ElasticTrainingPass::ScalingDownBackWardGraph(
                         v
                         SparseRecordIndices
             */
-            LOG(INFO) << "Copying new UnsortedSegmentSum node";
-            nodes_to_delete.emplace_back(i_node);
+            nodes_to_delete.insert(i_node);
             // Input 0
             {
               Node* reshape;
               TF_RETURN_IF_ERROR(i_node->input_node(0, &reshape));
-              nodes_to_delete.emplace_back(reshape);
+              nodes_to_delete.insert(reshape);
               // Reshape INPUT 0
               Node* control_denpency;
               TF_RETURN_IF_ERROR(reshape->input_node(0, &control_denpency));
-              nodes_to_delete.emplace_back(control_denpency);
+              nodes_to_delete.insert(control_denpency);
 
               // control_dependency INPUT 0
               Node* gather_1;
               TF_RETURN_IF_ERROR(control_denpency->input_node(0, &gather_1));
-              nodes_to_delete.emplace_back(gather_1);
+              nodes_to_delete.insert(gather_1);
 
-              // gather_1 INPUT1
-              // g->AddEdge(elastic_node, cur_partition_nums_+i/*idx*/,
-              // new_gather_1, 1);
               // gather_1 INPUT2
               Node* axis_1;
               TF_RETURN_IF_ERROR(gather_1->input_node(2, &axis_1));
-              nodes_to_delete.emplace_back(axis_1);
+              nodes_to_delete.insert(axis_1);
 
               // Reshape INPUT 1
               Node* concat;
               TF_RETURN_IF_ERROR(reshape->input_node(1, &concat));
-              nodes_to_delete.emplace_back(concat);
+              nodes_to_delete.insert(concat);
 
               // concat INPUT 1
               Node* strided_slice;
               TF_RETURN_IF_ERROR(concat->input_node(1, &strided_slice));
-              nodes_to_delete.emplace_back(strided_slice);
+              nodes_to_delete.insert(strided_slice);
 
               for (int k = 0; k < strided_slice->num_inputs(); ++k) {
                 Node* partial_strided_slice;
                 TF_RETURN_IF_ERROR(
                     strided_slice->input_node(k, &partial_strided_slice));
-                nodes_to_delete.emplace_back(partial_strided_slice);
+                nodes_to_delete.insert(partial_strided_slice);
               }
 
               // concat INPUT 2
               Node* axis;
               TF_RETURN_IF_ERROR(concat->input_node(2, &axis));
-              nodes_to_delete.emplace_back(axis);
+              nodes_to_delete.insert(axis);
             }
 
             // Input 2
             {
               Node* strided_slice;
               TF_RETURN_IF_ERROR(i_node->input_node(2, &strided_slice));
-              nodes_to_delete.emplace_back(strided_slice);
+              nodes_to_delete.insert(strided_slice);
 
               Node* shape;
               TF_RETURN_IF_ERROR(strided_slice->input_node(0, &shape));
-              nodes_to_delete.emplace_back(shape);
+              nodes_to_delete.insert(shape);
 
               for (int k = 1; k < strided_slice->num_inputs(); ++k) {
                 Node* partial_strided_slice;
                 TF_RETURN_IF_ERROR(
                     strided_slice->input_node(k, &partial_strided_slice));
-                nodes_to_delete.emplace_back(partial_strided_slice);
+                nodes_to_delete.insert(partial_strided_slice);
               }
             }
           }
         }
-        // LOG(INFO) << "filter op op_def : " << new_apply_node->DebugString();
       }
-    }
-  }
-  for (auto n : nodes_to_delete) {
-    if (n != nullptr) {
-      // LOG(INFO) << "DELETE --------- Removing nodes from graph..." << n->name();
-      g->RemoveNode(n);
     }
   }
 
@@ -1835,6 +1857,7 @@ Status ElasticTrainingPass::ScalingUpVarBackWardGraph(
     const std::string& primary_ev_name,
     const std::vector<std::string>& opt_ev_names, std::vector<Node*>& no_op_vec,
     int ev_partition_num) {
+  LOG(INFO) << "calling ScalingUpVarBackWardGraph";
   Node* var_node = node_to_origin_map[primary_ev_name][0];
   for (int i = 0; i < cur_partition_nums_; ++i) {
     Node* cur_var_node = node_to_origin_map[primary_ev_name][i];
@@ -1854,7 +1877,7 @@ Status ElasticTrainingPass::ScalingUpVarBackWardGraph(
             int tensor_size = old_shape_tensor.NumElements();
             int old_part_shape = old_shape_tensor.flat<int>()(0);
             int new_part_shape = old_part_shape * ev_partition_num / cur_partition_nums_;
-            LOG(INFO) << " new part shape" << new_part_shape;
+            LOG(INFO) << "ScalingUpVarBackWardGraph::new part shape" << new_part_shape;
             Tensor shape_tensor;
             TensorProto tensor_shape_proto;
             tensor_shape_proto.set_dtype(DT_INT32);
@@ -1900,7 +1923,6 @@ Status ElasticTrainingPass::ScalingUpVarBackWardGraph(
             no_op_vec[i] = no_node;
           }
 
-          LOG(INFO) << "Copying new apply node";
           Node* new_apply_node =
               CopyNode(g, node, new_device_name, NewNodeName(node->name(), i));
           g->AddControlEdge(new_apply_node, cur_noop_node);
@@ -1914,7 +1936,6 @@ Status ElasticTrainingPass::ScalingUpVarBackWardGraph(
           Node* i_node;
           TF_RETURN_IF_ERROR(node->input_node(node->num_inputs() - 1, &i_node));
           if (i_node->type_string() == "Identity") {
-            LOG(INFO) << "Copying new grad node";
             Node* new_grad_node = CopyNode(g, i_node, new_device_name,
                                           NewNodeName(i_node->name(), i));
             g->AddEdge(new_grad_node, 0, new_apply_node, node->num_inputs() - 1);
@@ -1936,30 +1957,22 @@ Status ElasticTrainingPass::ScalingUpVarBackWardGraph(
             int part_num;
             TF_RETURN_IF_ERROR(
                 GetNodeAttr(concat_offset_node->attrs(), "N", &part_num));
-            const Edge* axis_edge = nullptr;
-            TF_RETURN_IF_ERROR(concat_offset_node->input_edge(part_num, &axis_edge));
+          
             if (part_num != cur_partition_nums_) {
               concat_offset_node->ClearAttr("N");
               concat_offset_node->AddAttr("N", cur_partition_nums_);
             }
-            const Edge* input_edge = nullptr;
-            TF_RETURN_IF_ERROR(
-                concat_offset_node->input_edge(part_num, &input_edge));
-            g->UpdateEdge(input_edge->src(), input_edge->src_output(),
-                          concat_offset_node, cur_partition_nums_);
-
+            
             g->AddEdge(concat_offset_node, i, new_concat_grad_node, 1);
 
             Node* shape_node;
             TF_RETURN_IF_ERROR(concat_offset_node->input_node(1, &shape_node));
             Node* new_shape_node =
                 CopyNode(g, shape_node, shape_node->assigned_device_name(),
-                        NewNodeName(shape_node->name(), i));
-            g->AddEdge(axis_edge->src(), 0, concat_offset_node, cur_partition_nums_);
-            g->UpdateEdge(new_shape_node, 0, concat_offset_node, i);
-
+                        shape_node->name() + "_" + std::to_string(i));
+            g->AddEdge(new_shape_node, 0, concat_offset_node, i+1);
             g->AddEdge(new_shape_node, 0, new_concat_grad_node, 2);
-
+            //TODO grad value size
             for (auto* i_edge : i_node->in_edges()) {
               if (i_edge->IsControlEdge()) {
                 Node* control_node = i_edge->src();
@@ -2105,7 +2118,7 @@ Status ElasticTrainingPass::ScalingUpRedistributionGraph(
     }
   }
 
-  return Status::OK();
+  return s;
 }
 
 Status ElasticTrainingPass::ScalingUpVarRedistributionGraph(
@@ -2131,7 +2144,6 @@ Status ElasticTrainingPass::ScalingUpVarRedistributionGraph(
     }
   }
 
-  LOG(INFO) << "=======================";
   for (int i = ev_partition_num; i < cur_partition_nums_; ++i) {
     auto* var_node = var_node_vec[i];
     LOG(INFO) << "Adding new ReAssign Op " << var_node->name();
@@ -2183,11 +2195,11 @@ Status ElasticTrainingPass::ScalingDownVarRedistributionGraph(
 }
 
 Status ElasticTrainingPass::ScalingDownRedistributionGraph(
-    Graph* g, std::vector<Node*>& ev_node_vec, int ev_partition_num) {
+    Graph* g, std::vector<Node*>& ev_node_vec, 
+    std::unordered_set<Node*>& nodes_to_delete, int ev_partition_num) {
   Status s;
   DataType key_type, value_type;
   std::vector<Node*> filtered_node_vec;
-  std::vector<Node*> delete_node_vec;
   filtered_node_vec.reserve(cur_partition_nums_);
 
   for (int i = 0; i < ev_partition_num; ++i) {
@@ -2200,7 +2212,7 @@ Status ElasticTrainingPass::ScalingDownRedistributionGraph(
               GetNodeAttr(o_node->attrs(), "dtype", &value_type));
           filtered_node_vec.push_back(o_node);
         } else {
-          delete_node_vec.push_back(o_node);
+          nodes_to_delete.insert(o_node);
         }
       }
     }
@@ -2232,7 +2244,7 @@ Status ElasticTrainingPass::ScalingDownRedistributionGraph(
           }
           NodeDef import_storage_node_def;
           TF_RETURN_IF_ERROR(
-              NodeDefBuilder(import_op_name, kEvImportOp)
+              NodeDefBuilder(import_op_name + "/Import" , kEvImportOp)
                   .Input(ev_node->name(), 0, ev_node->output_type(0))
                   .Input(import_keys)
                   .Input(import_values)
@@ -2247,24 +2259,18 @@ Status ElasticTrainingPass::ScalingDownRedistributionGraph(
           Node* import_node = g->AddNode(import_storage_node_def, &s);
           TF_RETURN_IF_ERROR(s);
         } else {
-          delete_node_vec.push_back(o_node);
+          nodes_to_delete.insert(o_node);
         }
       }
     }
   }
 
-  for (auto* n : delete_node_vec) {
-    if (n != nullptr) {
-      // LOG(INFO) << "DELETE --------- Removing nodes from graph..." << n->name();
-      g->RemoveNode(n);
-    }
-  }
-  return Status::OK();
+  return s;
 }
 
 Status ElasticTrainingPass::RewriteElasticPartitionGraph(
     Graph* g, bool is_ev, std::vector<Node*>& ev_node_vec, Node** elastic_node,
-    Node** p_dynamic_stitch_node) {
+    Node** p_dynamic_stitch_node, std::unordered_set<Node*>& nodes_to_delete) {
   LOG(INFO) << "RewriteElasticPartitionGraph --------- ";
   string gather_name = is_ev ? "KvResourceGather" : "GatherV2";
   Status s;
@@ -2276,7 +2282,7 @@ Status ElasticTrainingPass::RewriteElasticPartitionGraph(
     auto* ev_node = ev_node_vec[i];
     for (auto* o_node : ev_node->out_nodes()) {
       if (is_ev) {
-        if (o_node->type_string() == "KvResourceGather") {
+        if (o_node->type_string() == gather_name) {
           gather_node_vec.push_back(o_node);
           const Edge* input_edge = nullptr;
           TF_RETURN_IF_ERROR(o_node->input_edge(1, &input_edge));
@@ -2298,9 +2304,9 @@ Status ElasticTrainingPass::RewriteElasticPartitionGraph(
       } else {
         if (o_node->type_string() == kIdentityOp) {
           for (auto* oo_node : o_node->out_nodes()) {
-            if (oo_node->type_string() == "GatherV2") {
+            if (oo_node->type_string() == gather_name) {
               gather_node_vec.push_back(oo_node);
-              identity_node_vec.push_back(oo_node);
+              identity_node_vec.push_back(oo_node); // trick
               if (i == 0) {
                 const Edge* input_edge = nullptr;
                 TF_RETURN_IF_ERROR(oo_node->input_edge(1, &input_edge));
@@ -2338,7 +2344,7 @@ Status ElasticTrainingPass::RewriteElasticPartitionGraph(
   std::string pre_node_name = node_name.substr(0, idx);
   NodeDef elastic_node_def;
   TF_RETURN_IF_ERROR(
-      NodeDefBuilder(pre_node_name + "ElasticPartition", "ElasticPartition")
+      NodeDefBuilder(pre_node_name + "/ElasticPartition", "ElasticPartition")
           .Input(a_copy->name(), 0, a_copy->output_type(0))
           .Input(b_copy->name(), 0, b_copy->output_type(0))
           .Attr("num_partitions", cur_partition_nums_)
@@ -2349,7 +2355,6 @@ Status ElasticTrainingPass::RewriteElasticPartitionGraph(
   TF_RETURN_IF_ERROR(g->IsValidNode(*elastic_node));
   TF_RETURN_IF_ERROR(s);
 
-  std::vector<Node*> delete_nodes;
   const Edge* input_edge = nullptr;
   TF_RETURN_IF_ERROR(dynamic_partition_node->input_edge(1, &input_edge));
   for (auto* o_node : input_edge->src()->out_nodes()) {
@@ -2365,7 +2370,7 @@ Status ElasticTrainingPass::RewriteElasticPartitionGraph(
           g->AddEdge(*elastic_node, o_edge->src_output(), o_edge->dst(),
                      o_edge->dst_input());
         }
-        delete_nodes.push_back(o_node);
+        nodes_to_delete.insert(o_node);
 
       } else {  // Indices
         // Input
@@ -2377,24 +2382,24 @@ Status ElasticTrainingPass::RewriteElasticPartitionGraph(
           g->AddEdge(*elastic_node, cur_partition_nums_ + o_edge->src_output(),
                      o_edge->dst(), o_edge->dst_input());
         }
-        delete_nodes.push_back(o_node);
+        nodes_to_delete.insert(o_node);
       }
     }
   }
 
   *p_dynamic_stitch_node = CopyNode(g, dynamic_stitch_node,
                                     dynamic_stitch_node->assigned_device_name(),
-                                    dynamic_stitch_node->name());
+                                    dynamic_stitch_node->name()+"/Copy");
   int part_num;
   TF_RETURN_IF_ERROR(
       GetNodeAttr((*p_dynamic_stitch_node)->attrs(), "N", &part_num));
 
   (*p_dynamic_stitch_node)->ClearAttr("N");
   (*p_dynamic_stitch_node)->AddAttr("N", cur_partition_nums_);
-  delete_nodes.push_back(dynamic_stitch_node);
+  nodes_to_delete.insert(dynamic_stitch_node);
   for (auto* o_edge : dynamic_stitch_node->out_edges()) {
-    g->UpdateEdge(*p_dynamic_stitch_node, o_edge->src_output(), o_edge->dst(),
-                  o_edge->dst_input());
+    TF_RETURN_IF_ERROR(g->UpdateEdge(*p_dynamic_stitch_node, o_edge->src_output(), o_edge->dst(),
+                  o_edge->dst_input()));
   }
   for (int i = 0; i < identity_node_vec.size(); ++i) {
     g->AddEdge(*elastic_node, cur_partition_nums_ + i, *p_dynamic_stitch_node,
@@ -2413,13 +2418,7 @@ Status ElasticTrainingPass::RewriteElasticPartitionGraph(
     }
   }
 
-  delete_nodes.push_back(input_edge->src());
-  for (auto* n : delete_nodes) {
-    if (n != nullptr) {
-      LOG(INFO) << "DELETE --------- " << n->name();
-      g->RemoveNode(n);
-    }
-  }
+  nodes_to_delete.insert(input_edge->src());
   return s;
 }
 
