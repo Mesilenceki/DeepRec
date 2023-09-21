@@ -43,6 +43,8 @@ from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import variable_scope
+from tensorflow.python.ops import state_ops
+from tensorflow.python.ops import variables
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.platform import gfile
@@ -343,12 +345,19 @@ def create(self):
 
 @tf_export(v1=["train.ElasticTrainingHook"])
 class ElasticTrainingHook(session_run_hook.SessionRunHook):
-  def __init__(self, scale_secs=None, scale_steps=2000):
+  def __init__(self, check_scale_secs=None, check_scale_steps=2000):
     import json
     self._task_index = json.loads(os.environ.get('TF_CONFIG', ""))["task"]["type"]
     self._aimaster_addr = os.environ.get("AIMASTER_ADDR", "")
     self._timer = SecondOrStepTimer(
-        every_secs=scale_secs, every_steps=scale_steps)
+        every_secs=check_scale_secs, every_steps=check_scale_steps)
+    self.init_op_list = []
+    self.tmp_value_list = []
+    self.init_ph_list = []
+    self.op_list = self._init_repartition_op()
+    self.op_list.extend(self._init_var_repartition_op())
+    with ops.control_dependencies(self.op_list):
+      self.import_op = [control_flow_ops.no_op("elastic_subgraph_import")]
 
   def after_create_session(self, session, coord):
     session.create = types.MethodType(create, session)
@@ -361,10 +370,10 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       raise RuntimeError(
           "Global step should be created to use CheckpointSaverHook.")
     self.init_op = [control_flow_ops.no_op("elastic_subgraph_init")]
-    self.op_list = self._init_repartition_op()
-    self.op_list.extend(self._init_var_repartition_op())
-    with ops.control_dependencies(self.op_list):
-      self.import_op = [control_flow_ops.no_op("elastic_subgraph_import")]
+    # self.op_list = self._init_repartition_op()
+    # self.op_list.extend(self._init_var_repartition_op())
+    # with ops.control_dependencies(self.op_list):
+    #   self.import_op = [control_flow_ops.no_op("elastic_subgraph_import")]
   
   def before_run(self, run_context):  # pylint: disable=unused-argument
     return SessionRunArgs(self._global_step_tensor)
@@ -393,19 +402,18 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
               graph = ops.get_default_graph()
               run_context.session.run(self.init_op)
               run_context.session.run(self.import_op, feed_dict={self.partition_num_ph: partition_num})
-              try:
-                dataset_init = graph.get_operation_by_name("make_initializer")
-                logging.info("running dataset_init op...")
-                run_context.session.run([dataset_init])
-              except KeyError:
-                logging.warning("dataset_init op not found.")
-            else:
-              time.sleep(30)
+              # try:
+              #   dataset_init = graph.get_operation_by_name("make_initializer")
+              #   logging.info("running dataset_init op...")
+              #   run_context.session.run([dataset_init])
+              # except KeyError:
+              #   logging.warning("dataset_init op not found.")
           elif resp.scaling_action == elastic_training_pb2.SCALING_DOWN:
             # part_variable_list = [x for x in variable_list if isinstance(x, variables.PartitionedVariable)]
             partition_num = resp.ps_num
             if self._task_index == "chief":
               run_context.session.run(self.import_op, feed_dict={self.partition_num_ph: partition_num})
+              tmp_value = run_context.session.run(self.tmp_value_list)
             run_context.session.close()
             _req = elastic_training_pb2.ReadyToUpdateRequest()
             _stub.ReadyToUpdate(_req)
@@ -413,27 +421,33 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
             graph = ops.get_default_graph()
             op_list = graph.get_operations()
             for op in op_list:
-              op_name = op.device
-              if "task:2" in op_name:
-                op._set_device("/job:ps/task:1/device:CPU:0")
-              # idx = op_name.find("task:")
-              # post_name = op_name[idx:]
-              # post_idx = post_name.find("/")
+              op_device = op.device
+              fields = op_device.strip('/').split('/')
+              for field_ in fields:
+                field = field_.lower()
+                # skip 'device:xxx'
+                if field.find("task:") != -1:
+                    if int(field.split(":")[1]) >= partition_num:
+                        op._set_device("")
               # if post_idx == -1:
-              #   if op_name[idx:] == "task:2":
-              #     op._set_device("/job:ps/task:1")
+              #   if int(op_device[idx:].split(":")[1]) > partition_num:
+              #     op._set_device("") #/job:ps/task:1/device:CPU:0
               # else:
-              #   if post_name[:post_idx] == "task:2":
-              #     op._set_device("/job:ps/task:1")
+              #   if int(post_name[:post_idx].split(":")[1]) > partition_num:
+              #     op._set_device("")
+              
             if self._task_index == "chief":
               try:
-                dataset_init = graph.get_operation_by_name("make_initializer")
-                run_context.session.run([dataset_init])
+                feed_dict = {}
+                for ph, v in zip(self.init_ph_list, tmp_value):
+                  feed_dict[ph] = v
+                print(feed_dict)
+                run_context.session.run(self.init_op_list, feed_dict=feed_dict)
+                # dataset_init = graph.get_operation_by_name("make_initializer")
+                # run_context.session.run([dataset_init])
               except KeyError:
                 logging.info("No dataset in graph...")
                 pass
-            else:
-              time.sleep(5)
         else:
           logging.warning("AIMASTER UNAVAILABLE {}".format(resp.msg))
       except Exception as e:
@@ -446,33 +460,6 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       if self._timer.should_trigger_for_step(global_step):
         self._timer.update_last_triggered_step(global_step)
         _check_scale_()
-
-  def _pre_placement_op(self):
-    # self.partition_num_ph
-    op_list = []
-    ev_list = ops.get_collection(ops.GraphKeys.EMBEDDING_VARIABLES)
-    variable_list = [x for x in ops.get_collection(ops.GraphKeys.GLOBAL_VARIABLES) if x not in ev_list]
-    import_storage_map = defaultdict(list)
-    def process_var_name(ev):
-      ev_name = ev.name.split(":")[0]
-      idx = ev_name.find("part_")
-      if idx != -1:
-        post_idx = ev_name[idx:].find("/")
-        part_len = len("part_")
-        if (post_idx == -1):
-          pre_name = ev_name[:idx-1]
-          var_idx = ev_name[idx+part_len:]
-        else:
-          pre_name = ev_name[:idx-1] + ev_name[idx:][post_idx:]
-          var_idx = ev_name[idx:][part_len:post_idx]
-        ev._variable.op._set_device("/job:ps/task:{}".format(var_idx))
-        return True, pre_name, var_idx
-      else:
-        return False, "", 0
-
-    for var in variable_list:
-      flag, pre_name, var_idx = process_var_name(var)
-    return
 
   def _init_var_repartition_op(self):
     # self.partition_num_ph
@@ -500,24 +487,36 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
         else:
           pre_name = ev_name[:idx-1] + ev_name[idx:][post_idx:]
           var_idx = int(ev_name[idx:][part_len:post_idx])
-        # ev._variable.op._set_device("/job:ps/task:{}".format(var_idx))
-        # for v
         return True, pre_name, device_id, var_idx
       else:
-        return False, "", 0, 0
+        new_op = None
+        op_name = ev.device
+        if "task:2" in op_name:
+          with ops.device("/job:ps/task:0/device:CPU:0"):
+            # p = variables.VariableV1([1.0], dtype=dtypes.float32, name=ev.name[:-2])
+            self.tmp_value_list.append(ev.read_value())
+            a = array_ops.placeholder(dtypes.float32, name=ev.name[:-2]+"/placeholder")
+            self.init_ph_list.append(a)
+            with ops.name_scope("elastic_import"):
+              self.init_op_list.append(state_ops.assign(ev, a, validate_shape=False))
+        return False, new_op, 0, 0
 
     for var in variable_list:
       flag, pre_name, device_id, var_idx = process_var_name(var)
       print(pre_name, " -- ", var_idx)
       if flag:
         import_storage_map[pre_name].append((device_id, var_idx, var))
+      elif pre_name is not None:
+        op_list.append(pre_name)
+
     graph = ops.get_default_graph()
     for var_name, var_list in import_storage_map.items():
       var_list.sort(key= lambda x: x[0])
       var_read = [var[2] for var in var_list]
-      try:
-        read_value = graph.get_tensor_by_name(var_name+"/ConcatPartitions/concat:0")
-      except:
+      # try:
+      #   read_value = graph.get_tensor_by_name(var_name+"/ConcatPartitions/concat:0")
+      # except:
+      with ops.name_scope("elastic_import"):
         read_value = array_ops.concat(var_read, axis=0) #partition_axis
       for idx, var_meta in enumerate(var_list):
         if var_meta[0] != var_meta[1]:
@@ -526,7 +525,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
           else:
             op_list.append(gen_kv_variable_ops.re_assign(var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
         else:
-          read_value = array_ops.concat(var_read, axis=0) #partition_axis
+          # read_value = array_ops.concat(var_read, axis=0) #partition_axis
           if resource_variable_ops.is_resource_variable(var_list[idx][2]):
             op_list.append(gen_kv_variable_ops.re_assign_resource(var_list[idx][2], read_value, self.partition_num_ph, idx, len(var_list)))
           else:

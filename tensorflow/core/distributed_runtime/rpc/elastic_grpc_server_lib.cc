@@ -159,6 +159,7 @@ Status ElasticGrpcServer::UpdateServerDef(const RepeatedPbString& repeated_str, 
 
     after_part_num = repeated_str.size();
     int job_size = server_def_.cluster().job_size();
+    
     for (int j = 0; j < job_size; ++j) {
       auto* job = server_def_.mutable_cluster()->mutable_job(j);
       if (job->name() == "ps") {
@@ -167,18 +168,28 @@ Status ElasticGrpcServer::UpdateServerDef(const RepeatedPbString& repeated_str, 
           return Status::OK();
         } else if (after_part_num > before_part_num) {
           LOG(INFO) << "JUNQI Scaling up ===============> " << after_part_num;
-          for (int i = before_part_num; i < after_part_num; ++i) {
-            auto ps_addr = repeated_str[i];
-            job->mutable_tasks()->insert({i, ps_addr});
-            tf_config_json["cluster"]["ps"].append(ps_addr);
+          std::unordered_set<string> target_string_set;
+          for (auto& value: tf_config_json["cluster"]["ps"]) {
+            target_string_set.emplace(value.asString());
+          }
+          for (int i = 0; i < after_part_num; ++i) {
+            if (target_string_set.find(repeated_str[i]) == target_string_set.end()) {
+              auto ps_addr = repeated_str[i];
+              job->mutable_tasks()->insert({i, ps_addr});
+              tf_config_json["cluster"]["ps"].append(ps_addr);
+            }
           } 
           break;
         } else {
           LOG(INFO) << "JUNQI Scaling down ===============> " << after_part_num;
-          for (int i = after_part_num; i < before_part_num; ++i) {
-            Json::Value ps_addr;
-            tf_config_json["cluster"]["ps"].removeIndex(i, &ps_addr);
-            job->mutable_tasks()->erase(i);
+          std::unordered_set<string> target_string_set(repeated_str.begin(), repeated_str.end());
+          for (int i = 0; i < before_part_num; ++i) {
+            string tmp_string = tf_config_json["cluster"]["ps"][i].asString();
+            if (target_string_set.find(tmp_string) == target_string_set.end()) {
+              Json::Value ps_addr;
+              tf_config_json["cluster"]["ps"].removeIndex(i, &ps_addr);
+              job->mutable_tasks()->erase(i);
+            }
           }
         }
       }

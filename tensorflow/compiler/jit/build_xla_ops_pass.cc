@@ -337,7 +337,6 @@ xla::StatusOr<jit::DeviceId> InferDeviceForCluster(
     // TODO(sanjoy): We need this because EncapsulateSubgraphsPass drops device
     // assignment when constant folding.  We should fix EncapsulateSubgraphsPass
     // instead.
-    LOG(INFO) << "node name: " << n->name() << " --- " << n->assigned_device_name();
     TF_ASSIGN_OR_RETURN(jit::DeviceId device_id,
                         device_info_cache->GetIdFor(n->assigned_device_name()));
     device_set.Insert(device_id);

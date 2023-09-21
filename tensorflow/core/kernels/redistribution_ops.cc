@@ -193,11 +193,21 @@ class ReAssignOp : public OpKernel {
       const Tensor& rhs = context->input(1);
 
       TensorShape new_shape = old_lhs.shape();
+      int shard_unit = rhs.shape().dim_size(0) / new_num_part;;
       if (new_num_part > num_partitions_) {
-        new_shape.set_dim(0, (rhs.shape().dim_size(0) - new_shape.dim_size(0) * (new_num_part - num_partitions_)) / new_num_part);
+        if (partition_id_ == (new_num_part - 1)) {
+          new_shape.set_dim(0, (rhs.shape().dim_size(0) - shard_unit * (new_num_part - 1)));
+        } else {
+          new_shape.set_dim(0, shard_unit);
+        }
         LOG(INFO) << "scale up new shape " << new_shape.dim_size(0) << " ---- " << rhs.shape().dim_size(0);
       } else {
-        new_shape.set_dim(0, rhs.shape().dim_size(0) / new_num_part);
+        shard_unit = rhs.shape().dim_size(0) / new_num_part;
+        if (partition_id_ == (new_num_part - 2)) {
+          new_shape.set_dim(0, (rhs.shape().dim_size(0) - shard_unit * (new_num_part - 2)));
+        } else {
+          new_shape.set_dim(0, shard_unit);
+        }
         LOG(INFO) << "scale down new shape " << new_shape.dim_size(0) << " ---- " << rhs.shape().dim_size(0);
       }
       
@@ -215,26 +225,26 @@ class ReAssignOp : public OpKernel {
       context->clear_recorded_memory();
       context->replace_ref_input(0, *copyTensor, /* lock_held */ true);
       if (use_exclusive_lock_) {
-        Copy(context, copyTensor, rhs, new_num_part);
+        Copy(context, copyTensor, rhs, new_num_part, shard_unit * partition_id_);
         return;
       }
       // The tensor has already been initialized and the right hand side
       // matches the left hand side's shape. We have been told to do the
       // copy outside the lock.
-      Copy(context, copyTensor, rhs, new_num_part);
+      Copy(context, copyTensor, rhs, new_num_part, shard_unit * partition_id_);
     }
   }
 
  private:
   void Copy(OpKernelContext* context, Tensor* output, 
-            const Tensor& rhs, int new_partition_nums) {
+            const Tensor& rhs, int new_partition_nums, int offset) {
     if (new_partition_nums > num_partitions_) {
       functor::CustomScaleUp<Device, T> copy;
-      copy(context->eigen_device<Device>(), output->flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums);
+      copy(context->eigen_device<Device>(), output->flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums, offset);
     } else {
       if (partition_id_ == new_partition_nums) return;
       functor::CustomScaleDown<Device, T> copy;
-      copy(context->eigen_device<Device>(), output->flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums);
+      copy(context->eigen_device<Device>(), output->flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums, offset);
     }
 
   }
@@ -269,16 +279,12 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_KERNELS);
 // #undef REGISTER_GPU_KERNELS
 // #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
-// template <typename Device, typename T>
+// template <typename Device>
 // class ReAssignResourceOp : public OpKernel {
 //  public:
 //   explicit ReAssignResourceOp(OpKernelConstruction* context) : OpKernel(context) {
-//     OP_REQUIRES_OK(context,
-//                    context->GetAttr("use_locking", &use_exclusive_lock_));
 //     OP_REQUIRES_OK(context, context->GetAttr("partition_id", &partition_id_));
 //     OP_REQUIRES_OK(context, context->GetAttr("partition_nums", &num_partitions_));
-//     OP_REQUIRES(context, IsRefType(context->input_type(0)),
-//                 errors::InvalidArgument("lhs input needs to be a ref type"));
 //   }
   
 //   void Compute(OpKernelContext* context) override {
@@ -286,7 +292,6 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_KERNELS);
 //     int new_num_part = part_num_tensor.flat<int32>()(0);
 
 //     {
-//       const Tensor& value = context->input(1);
 //       core::RefCountPtr<Var> variable;
 //       OP_REQUIRES_OK(context, LookupOrCreateResource<Var>(
 //                                   context, HandleFromInput(context, 0), &variable,
@@ -295,39 +300,53 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_KERNELS);
 //                                     *ptr = new Var(DT_VARIANT);
 //                                     return Status::OK();
 //                                   }));
-//       const Tensor& rhs = context->input(1);
 
-//       TensorShape new_shape = old_lhs.shape();
-//       if (new_num_part > num_partitions_) {
-//         new_shape.set_dim(0, (rhs.shape().dim_size(0) - new_shape.dim_size(0) * (new_num_part - num_partitions_)) / new_num_part);
-//         LOG(INFO) << "scale up new shape " << new_shape.dim_size(0) << " ---- " << rhs.shape().dim_size(0);
+//       mutex_lock ml(*variable->mu());
+//       OP_REQUIRES(context, variable->tensor()->dtype() == dtype_,
+//                   errors::InvalidArgument(
+//                       "Trying to assign variable with wrong dtype. Expected ",
+//                       DataTypeString(variable->tensor()->dtype()), " got ",
+//                       DataTypeString(dtype_)));
+//       if (variable->copy_on_read_mode.load()) {
+//         PersistentTensor unused;
+//         Tensor* tmp;
+//         AllocatorAttributes attr;
+//         attr.set_gpu_compatible(true);
+//         attr.set_nic_compatible(true);
+//         OP_REQUIRES_OK(context,
+//                       context->allocate_persistent(value.dtype(), value.shape(),
+//                                                     &unused, &tmp, attr));
+//         functor::DenseUpdate<Device, T, ASSIGN> copy_functor;
+//         copy_functor(context->eigen_device<Device>(), tmp->flat<T>(),
+//                     value.flat<T>());
+//         *variable->tensor() = *tmp;
 //       } else {
-//         new_shape.set_dim(0, rhs.shape().dim_size(0) / new_num_part);
-//         LOG(INFO) << "scale down new shape " << new_shape.dim_size(0) << " ---- " << rhs.shape().dim_size(0);
+//         *variable->tensor() = value;
 //       }
-      
-
-//       // Otherwise, create a new persistent tensor whose shape matches the
-//       // right hand side, hand off to lhs and copy the rhs into it.
-//       PersistentTensor copy;
-//       Tensor* copyTensor = nullptr;
-//       AllocatorAttributes attr;
-//       OP_REQUIRES_OK(
-//           context, context->allocate_persistent(old_lhs.dtype(), new_shape,
-//                                                 &copy, &copyTensor, attr));
-//       // We track memory of variables in variable ops instead of in this
-//       // assign op.
-//       context->clear_recorded_memory();
-//       context->replace_ref_input(0, *copyTensor, /* lock_held */ true);
-//       if (use_exclusive_lock_) {
-//         Copy(context, copyTensor, rhs, new_num_part);
-//         return;
+//       variable->is_initialized = true;
+//       mutex_lock ml(*variable->mu());
+//       OP_REQUIRES(context, variable->tensor()->dtype() == dtype_,
+//                   errors::InvalidArgument(
+//                       "Trying to assign variable with wrong dtype. Expected ",
+//                       DataTypeString(variable->tensor()->dtype()), " got ",
+//                       DataTypeString(dtype_)));
+//       if (variable->copy_on_read_mode.load()) {
+//         PersistentTensor unused;
+//         Tensor* tmp;
+//         AllocatorAttributes attr;
+//         attr.set_gpu_compatible(true);
+//         attr.set_nic_compatible(true);
+//         OP_REQUIRES_OK(context,
+//                       context->allocate_persistent(value.dtype(), value.shape(),
+//                                                     &unused, &tmp, attr));
+//         functor::DenseUpdate<Device, T, ASSIGN> copy_functor;
+//         copy_functor(context->eigen_device<Device>(), tmp->flat<T>(),
+//                     value.flat<T>());
+//         *variable->tensor() = *tmp;
+//       } else {
+//         *variable->tensor() = value;
 //       }
-//       // The tensor has already been initialized and the right hand side
-//       // matches the left hand side's shape. We have been told to do the
-//       // copy outside the lock.
-//       Copy(context, copyTensor, rhs, new_num_part);
-//     }
+//       variable->is_initialized = true;
 //   }
 
 //  private:
@@ -345,7 +364,6 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_KERNELS);
 //   }
 
 //  private:
-//   bool use_exclusive_lock_;
 //   int partition_id_;
 //   int num_partitions_;
 // };
@@ -353,12 +371,7 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_KERNELS);
 // typedef Eigen::ThreadPoolDevice CPUDevice;
 // typedef Eigen::GpuDevice GPUDevice;
 
-// #define REGISTER_KERNELS(type)                                       \
-//   REGISTER_KERNEL_BUILDER(                                           \
-//       Name("ReAssignResource").Device(DEVICE_CPU).TypeConstraint<type>("T"), \
-//       ReAssignResourceOp<CPUDevice, type>);
-
-// TF_CALL_REAL_NUMBER_TYPES(REGISTER_KERNELS);
-// #undef REGISTER_KERNELS
+// REGISTER_KERNEL_BUILDER(Name("ReAssignResource").Device(DEVICE_CPU), \
+//       ReAssignResourceOp<CPUDevice>);
 
 } // namespace tensorflow

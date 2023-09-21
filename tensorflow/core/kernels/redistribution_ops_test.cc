@@ -83,6 +83,17 @@ class ReDistributionOpTest : public OpsTestBase {
                 .Attr("dtype", DT_FLOAT)
                 .Finalize(node_def()));
   }
+
+  void MakeReAssignOp() {
+    TF_ASSERT_OK(NodeDefBuilder("re_assign", "ReAssign")
+                .Input(FakeInput(MakeRefType(DT_INT64)))
+                .Input(FakeInput(DT_INT64))
+                .Input(FakeInput(DT_INT32))
+                .Attr("partition_id", 0)
+                .Attr("partition_nums", 2)
+                .Attr("T", DT_INT64)
+                .Finalize(node_def()));
+  }
 };
 
 TEST_F(ReDistributionOpTest, TestEVFilterStorage) {

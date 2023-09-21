@@ -1028,7 +1028,6 @@ Status MarkForCompilationPassImpl::BuildInitialClusterSet() {
     const string& device_name_str = !node->assigned_device_name().empty()
                                         ? node->assigned_device_name()
                                         : node->requested_device();
-    LOG(INFO) << "node name: " << node->name() << " --- " << device_name_str;
     TF_ASSIGN_OR_RETURN(DeviceId device,
                         device_info_cache_.GetIdFor(device_name_str));
 

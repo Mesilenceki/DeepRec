@@ -35,7 +35,8 @@ struct CustomScaleDown<CPUDevice, string> {
   void operator()(const CPUDevice& d, 
                   typename TTypes<tstring>::Flat output,
                   typename TTypes<tstring>::ConstFlat rhs,
-                  int partition_id, int partition_num) {
+                  int partition_id, int partition_num,
+                  int offset) {
     if (output.dimension(0) == 1) {
       output.data()->resize(rhs.data()->size());
       auto work = [&output, &rhs](int64 start, int64 end) {
@@ -47,7 +48,6 @@ struct CustomScaleDown<CPUDevice, string> {
                                         .1, 0),
                     work);
     } else {
-      auto offset = rhs.dimension(0);
       auto work = [&output, &rhs](int64 start, int64 end) {
         for (int i = start; i < end; ++i) {
           output.data()[i].resize(rhs.data()[i].size());
@@ -98,7 +98,8 @@ struct CustomScaleDown<CPUDevice, T> {
   void operator()(const CPUDevice& d, 
                   typename TTypes<T>::Flat output,
                   typename TTypes<T>::ConstFlat rhs,
-                  int partition_id, int partition_num) {
+                  int partition_id, int partition_num,
+                  int offset) {
     if (output.dimension(0) == 1) {
       auto work = [&output, &rhs](int64 start, int64 end) {
         for (int i = start; i < end; ++i) {
@@ -111,7 +112,6 @@ struct CustomScaleDown<CPUDevice, T> {
                     work);
     } else {
       auto size = output.dimension(0);
-      int64 offset = partition_id * size;
 
       LOG(INFO) << "size is: " << size << " offset is: " << offset;
 
@@ -135,7 +135,8 @@ struct CustomScaleUp<CPUDevice, string> {
   void operator()(const CPUDevice& d, 
                   typename TTypes<tstring>::Flat output,
                   typename TTypes<tstring>::ConstFlat rhs,
-                  int partition_id, int partition_num) {
+                  int partition_id, int partition_num,
+                  int offset) {
     if (output.dimension(0) == 1) {
       output.data()->resize(rhs.data()->size());
       auto work = [&output, &rhs](int64 start, int64 end) {
@@ -148,7 +149,6 @@ struct CustomScaleUp<CPUDevice, string> {
                     work);
     } else {
       auto size = rhs.dimension(0);
-      int64 offset = partition_id * size;
       auto work = [&output, &rhs, &offset](int64 start, int64 end) {
         for (int i = start; i < end; ++i) {
           output.data()[i].resize(rhs.data()[i].size());
@@ -178,7 +178,8 @@ struct CustomScaleUp<CPUDevice, T> {
   void operator()(const CPUDevice& d, 
                   typename TTypes<T>::Flat output,
                   typename TTypes<T>::ConstFlat rhs,
-                  int partition_id, int partition_num) {
+                  int partition_id, int partition_num,
+                  int offset) {
     if (output.dimension(0) == 1) {
       auto work = [&output, &rhs](int64 start, int64 end) {
         for (int i = start; i < end; ++i) {
@@ -191,7 +192,6 @@ struct CustomScaleUp<CPUDevice, T> {
                     work);
     } else {
       auto size = output.dimension(0);
-      int64 offset = partition_id * size;
 
       LOG(INFO) << "size is: " << size << " offset is: " << offset;
 

@@ -752,8 +752,6 @@ static Status MergeOneBundle(Env* env, StringPiece prefix,
         *slot = to_merge_entry.slices(i);
       }
       CHECK_EQ(existing_entry.dtype(), to_merge_entry.dtype());
-      LOG(INFO) << " JUNQI " << TensorShape(existing_entry.shape()).DebugString()
-                << " ====== " <<  TensorShape(to_merge_entry.shape()).DebugString();
       CHECK(TensorShape(existing_entry.shape()) ==
             TensorShape(to_merge_entry.shape()));
       continue;
