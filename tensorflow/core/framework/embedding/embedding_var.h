@@ -632,33 +632,55 @@ class EmbeddingVar : public ResourceBase {
                       std::vector<K>& filtered_keys_list,
                       std::vector<ValuePtr<V>*>& filtered_value_ptr_list) {
 
-    for (int64 i = 0; i < filtered_keys_list.size(); ++i) {
-      V* val = filtered_value_ptr_list[i]->GetValue(emb_config_.emb_index,
-        storage_->GetOffset(emb_config_.emb_index));
-      V* primary_val = filtered_value_ptr_list[i]->GetValue(0, 0);
-      key_list[i] = filtered_keys_list[i];
-      if (emb_config_.filter_freq != 0 || emb_config_.record_freq) {
-        int64 dump_freq = filter_->GetFreq(
-            filtered_keys_list[i], filtered_value_ptr_list[i]);
-        freq_list[i] = dump_freq;
-      }
-      if (emb_config_.steps_to_live != 0 || emb_config_.record_version) {
-        int64 dump_version = filtered_value_ptr_list[i]->GetStep();
-        version_list[i] = dump_version;
-      }
+    bool save_unfiltered_features = true;
+    TF_CHECK_OK(ReadBoolFromEnvVar(
+        "TF_EV_SAVE_FILTERED_FEATURES", true, &save_unfiltered_features));
 
-      if (val != nullptr && primary_val != nullptr) {
-        memcpy(value_list + i * value_len_, val, sizeof(V) * value_len_);
-      } else if (val != nullptr && primary_val == nullptr) {
-        memcpy(value_list + i * value_len_, default_value_, sizeof(V) * value_len_);
-      } else {
-        if (emb_config_.filter_freq != 0) {
-          // if (!save_unfiltered_features) continue;
+    bool is_save_freq = emb_config_.is_save_freq();
+    bool is_save_version = emb_config_.is_save_version();
+
+
+    for (int64 i = 0; i < tot_keys_list.size(); ++i) {
+      auto& value_ptr = tot_value_ptr_list[i];
+      if((int64)value_ptr == ValuePtrStatus::IS_DELETED)
+        return;
+
+      V* primary_val = value_ptr->GetValue(0, 0);
+      bool is_not_admit =
+          primary_val == nullptr
+          && emb_config_.filter_freq != 0;
+
+      if (!is_not_admit) {
+        key_list[i] = tot_keys_list[i];
+
+        if (primary_val == nullptr) {
+          memcpy(value_list + i * value_len_, default_value_, sizeof(V) * value_len_);
+        } else if (
+            (int64)primary_val == ValuePosition::NOT_IN_DRAM) {
+          value_ptr_vec_.emplace_back((V*)ValuePosition::NOT_IN_DRAM);
+        } else {
+          V* val = value_ptr->GetValue(emb_config_.emb_index,
+            storage_->GetOffset(emb_config_.emb_index));
+          memcpy(value_list + i * value_len_, val, sizeof(V) * value_len_);
         }
-        // feature filtered
-        // value_list->emplace_back(nullptr);
-      }
+
+
+        if(is_save_version) {
+          int64 dump_version = value_ptr->GetStep();
+          version_list[i] = dump_version;
+        }
+
+        if(is_save_freq) {
+          int64 dump_freq = value_ptr->GetFreq();
+          freq_list[i] = dump_freq;
+        }
+      } else {
+        if (!save_unfiltered_features)
+          return;
+        //TODO(JUNQI) : currently not export filtered keys
+      }    
     }
+    return Status::OK();
   }
 
   Status ImportStorage(int64 key_num, int partition_id,
