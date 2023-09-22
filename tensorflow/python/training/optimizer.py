@@ -93,6 +93,18 @@ def _deduplicate_indexed_slices_with_counts(values, indices):
       array_ops.shape(unique_indices)[0])
   return (summed_values, unique_indices, indices_counts)
 
+def _deduplicate_indexed_slices_with_counts_reduction(values, indices, counts):
+  """Sums `values` associated with any non-unique `indices`
+  and return counts of each count in `values`."""
+  unique_indices, new_index_positions = array_ops.unique(indices)
+  summed_values = math_ops.unsorted_segment_sum(
+      values, new_index_positions,
+      array_ops.shape(unique_indices)[0])
+  summed_counts = math_ops.unsorted_segment_sum(
+      counts, new_index_positions,
+      array_ops.shape(unique_indices)[0])
+  return (summed_values, unique_indices, summed_counts)
+
 def _var_key(var):
   # TODO(ashankar): Consolidate handling for eager and graph
   if hasattr(var, "op"):
@@ -243,8 +255,7 @@ def _get_processor(v):
   if v.op.type == "KvVarHandleOp":
     from tensorflow.core.framework import attr_value_pb2
     from tensorflow.core.framework.embedding import config_pb2
-    v._init_op._set_attr("embedding_variable_type",
-        attr_value_pb2.AttrValue(i=config_pb2.EmbeddingVariableType.MUTABLE))
+    slot_creator._set_init_op_embedding_type_attr(v, config_pb2.EmbeddingVariableType.MUTABLE)
     return _DenseResourceVariableProcessor(v)
   if isinstance(v, variables.Variable):
     return _RefVariableProcessor(v)
@@ -1089,14 +1100,24 @@ class Optimizer(
     """
     from tensorflow.python.ops import kv_variable_ops
     if isinstance(handle, kv_variable_ops.EmbeddingVariable) and handle.need_counts():
-      if handle._counts_tensor is None:
+      if len(handle._counts_tensor.keys()) == 0:
         summed_grad, unique_indices, indices_counts = \
             _deduplicate_indexed_slices_with_counts(
                 values=grad, indices=indices)
       else:
-        summed_grad, unique_indices = _deduplicate_indexed_slices(
-            values=grad, indices=indices)
-        indices_counts = handle._counts_tensor
+        if indices.op.type == "ConcatV2":
+          total_counts = []
+          for tensor in indices.op.inputs:
+            if tensor.op.type == "Reshape":
+              indices_tensor = tensor.op.inputs[0]
+              total_counts.append(handle._counts_tensor[indices_tensor])
+          counts_tensor = array_ops.concat(total_counts, 0)
+        elif indices.op.type == "Reshape":
+          indices_tensor = indices.op.inputs[0]
+          counts_tensor = handle._counts_tensor[indices_tensor]
+        summed_grad, unique_indices, indices_counts = \
+            _deduplicate_indexed_slices_with_counts_reduction(
+                grad, indices, counts_tensor)
       return self._resource_apply_sparse(
           summed_grad, handle, unique_indices, indices_counts)
     else:

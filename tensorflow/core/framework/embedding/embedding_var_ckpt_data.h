@@ -15,11 +15,11 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_FRAMEWORK_EMBEDDING_EMBEDDING_VAR_CKPT_DATA_
 #define TENSORFLOW_CORE_FRAMEWORK_EMBEDDING_EMBEDDING_VAR_CKPT_DATA_
 #include "tensorflow/core/platform/types.h"
-#include "tensorflow/core/util/tensor_bundle/tensor_bundle.h"
-#include "tensorflow/core/kernels/save_restore_tensor.h"
 #include "tensorflow/core/framework/embedding/embedding_config.h"
 #include "tensorflow/core/framework/embedding/embedding_var_dump_iterator.h"
 namespace tensorflow {
+class BundleWriter;
+
 namespace embedding {
 
 template<class K, class V>
@@ -30,105 +30,12 @@ class  EmbeddingVarCkptData {
                V* default_value, int64 value_offset,
                bool is_save_freq,
                bool is_save_version,
-               bool save_unfiltered_features) {
-    if((int64)value_ptr == ValuePtrStatus::IS_DELETED)
-      return;
+               bool save_unfiltered_features);
 
-    V* primary_val = value_ptr->GetValue(0, 0);
-    bool is_not_admit =
-        primary_val == nullptr
-        && emb_config.filter_freq != 0;
-
-    if (!is_not_admit) {
-       key_vec_.emplace_back(key);
-
-      if (primary_val == nullptr) {
-        value_ptr_vec_.emplace_back(default_value);
-      } else if (
-          (int64)primary_val == ValuePosition::NOT_IN_DRAM) {
-        value_ptr_vec_.emplace_back((V*)ValuePosition::NOT_IN_DRAM);
-      } else {
-        V* val = value_ptr->GetValue(emb_config.emb_index,
-            value_offset);
-        value_ptr_vec_.emplace_back(val);
-      }
-
-
-      if(is_save_version) {
-        int64 dump_version = value_ptr->GetStep();
-        version_vec_.emplace_back(dump_version);
-      }
-
-      if(is_save_freq) {
-        int64 dump_freq = value_ptr->GetFreq();
-        freq_vec_.emplace_back(dump_freq);
-      }
-    } else {
-      if (!save_unfiltered_features)
-        return;
-
-      // value_ptr_vec_.emplace_back();
-
-      key_filter_vec_.emplace_back(key);
-
-      if(is_save_version) {
-        int64 dump_version = value_ptr->GetStep();
-        version_filter_vec_.emplace_back(dump_version);
-      }
-
-      int64 dump_freq = value_ptr->GetFreq();
-      freq_filter_vec_.emplace_back(dump_freq);
-    }
-  }
-
-  void Emplace(K key, V* value_ptr) {
-    key_vec_.emplace_back(key);
-    value_ptr_vec_.emplace_back(value_ptr);
-  }
+  void Emplace(K key, V* value_ptr);
 
   void SetWithPartition(
-      std::vector<EmbeddingVarCkptData<K, V>>& ev_ckpt_data_parts) {
-    part_offset_.resize(kSavedPartitionNum + 1);
-    part_filter_offset_.resize(kSavedPartitionNum + 1);
-    part_offset_[0] = 0;
-    part_filter_offset_[0] = 0;
-    for (int i = 0; i < kSavedPartitionNum; i++) {
-      part_offset_[i + 1] =
-          part_offset_[i] + ev_ckpt_data_parts[i].key_vec_.size();
-
-      part_filter_offset_[i + 1] =
-          part_filter_offset_[i] +
-          ev_ckpt_data_parts[i].key_filter_vec_.size();
-
-      for (int64 j = 0; j < ev_ckpt_data_parts[i].key_vec_.size(); j++) {
-        key_vec_.emplace_back(ev_ckpt_data_parts[i].key_vec_[j]);
-      }
-
-      for (int64 j = 0; j < ev_ckpt_data_parts[i].value_ptr_vec_.size(); j++) {
-        value_ptr_vec_.emplace_back(ev_ckpt_data_parts[i].value_ptr_vec_[j]);
-      }
-
-      for (int64 j = 0; j < ev_ckpt_data_parts[i].version_vec_.size(); j++) {
-        version_vec_.emplace_back(ev_ckpt_data_parts[i].version_vec_[j]);
-      }
-
-      for (int64 j = 0; j < ev_ckpt_data_parts[i].freq_vec_.size(); j++) {
-        freq_vec_.emplace_back(ev_ckpt_data_parts[i].freq_vec_[j]);
-      }
-
-      for (int64 j = 0; j < ev_ckpt_data_parts[i].key_filter_vec_.size(); j++) {
-        key_filter_vec_.emplace_back(ev_ckpt_data_parts[i].key_filter_vec_[j]);
-      }
-
-      for (int64 j = 0; j < ev_ckpt_data_parts[i].version_filter_vec_.size(); j++) {
-        version_filter_vec_.emplace_back(ev_ckpt_data_parts[i].version_filter_vec_[j]);
-      }
-
-      for (int64 j = 0; j < ev_ckpt_data_parts[i].freq_filter_vec_.size(); j++) {
-        freq_filter_vec_.emplace_back(ev_ckpt_data_parts[i].freq_filter_vec_[j]);
-      }
-    }
-  }
+      std::vector<EmbeddingVarCkptData<K, V>>& ev_ckpt_data_parts);
 
   Status ExportToCkpt(const string& tensor_name,
                       BundleWriter* writer,
