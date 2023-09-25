@@ -258,7 +258,7 @@ class SingleTierStorage : public Storage<K, V> {
     std::vector<K> key_list_tmp;
     TF_CHECK_OK(kv_->GetSnapshot(
         &key_list_tmp, &value_ptr_list));
-
+    LOG(INFO) << "embedding size: " << key_list_tmp.size() << " " << value_ptr_list.size();
     if (emb_config.is_primary()) {
       Shrink(key_list_tmp, value_ptr_list, shrink_args, value_len);
     }

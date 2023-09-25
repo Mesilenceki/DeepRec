@@ -30,6 +30,7 @@ limitations under the License.
 #include "tensorflow/core/framework/embedding/cache.h"
 #include "tensorflow/core/framework/embedding/embedding_var_context.h"
 #include "tensorflow/core/framework/embedding/embedding_var_restore.h"
+#include "tensorflow/core/framework/embedding/config.pb.h"
 #include "tensorflow/core/framework/embedding/value_ptr.h"
 #include "tensorflow/core/framework/embedding/filter_factory.h"
 #include "tensorflow/core/framework/embedding/gpu_hash_map_kv.h"
@@ -599,6 +600,14 @@ class EmbeddingVar : public ResourceBase {
                           default_value_);
   }
 
+  Status GetSnapshot(std::vector<K>* key_list,
+                         std::vector<ValuePtr<V>*>* value_ptr_list,
+                         int partition_id, int partition_num) {
+    return storage_->GetSnapshot(key_list, value_ptr_list, 
+                                 partition_id, partition_num,
+                                 emb_config_.is_primary());
+  }
+
   void GetSnapshot(std::vector<K>* key_list,
                    std::vector<V*>* value_list,
                    std::vector<int64>* version_list,
@@ -629,8 +638,8 @@ class EmbeddingVar : public ResourceBase {
 
   void FilterStorage(K* key_list, V* value_list,
                       int64* version_list, int64* freq_list,
-                      std::vector<K>& filtered_keys_list,
-                      std::vector<ValuePtr<V>*>& filtered_value_ptr_list) {
+                      std::vector<K>& tot_keys_list,
+                      std::vector<ValuePtr<V>*>& tot_value_ptr_list) {
 
     bool save_unfiltered_features = true;
     TF_CHECK_OK(ReadBoolFromEnvVar(
@@ -642,7 +651,7 @@ class EmbeddingVar : public ResourceBase {
 
     for (int64 i = 0; i < tot_keys_list.size(); ++i) {
       auto& value_ptr = tot_value_ptr_list[i];
-      if((int64)value_ptr == ValuePtrStatus::IS_DELETED)
+      if((int64)value_ptr == embedding::ValuePtrStatus::IS_DELETED)
         return;
 
       V* primary_val = value_ptr->GetValue(0, 0);
@@ -656,8 +665,9 @@ class EmbeddingVar : public ResourceBase {
         if (primary_val == nullptr) {
           memcpy(value_list + i * value_len_, default_value_, sizeof(V) * value_len_);
         } else if (
-            (int64)primary_val == ValuePosition::NOT_IN_DRAM) {
-          value_ptr_vec_.emplace_back((V*)ValuePosition::NOT_IN_DRAM);
+            (int64)primary_val == embedding::ValuePosition::NOT_IN_DRAM) {
+          auto tmp_value = value_list + i * value_len_;
+          tmp_value = (V*)embedding::ValuePosition::NOT_IN_DRAM;
         } else {
           V* val = value_ptr->GetValue(emb_config_.emb_index,
             storage_->GetOffset(emb_config_.emb_index));
@@ -680,7 +690,6 @@ class EmbeddingVar : public ResourceBase {
         //TODO(JUNQI) : currently not export filtered keys
       }    
     }
-    return Status::OK();
   }
 
   Status ImportStorage(int64 key_num, int partition_id,

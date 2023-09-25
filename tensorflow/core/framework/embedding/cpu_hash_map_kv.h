@@ -123,7 +123,7 @@ class LocklessHashMap : public KVInterface<K, V> {
       for (int64 j = 0; j < bucket_count; j++) {
         if (hash_map_dump[j].first != LocklessHashMap<K, V>::EMPTY_KEY_ 
             && hash_map_dump[j].first != LocklessHashMap<K, V>::DELETED_KEY_
-            && hash_map_dump[j].first % partition_nums != partition_id) {
+            && hash_map_dump[j].first % 1000 % partition_nums != partition_id) {
           key_list->emplace_back(hash_map_dump[j].first);
           value_ptr_list->emplace_back(hash_map_dump[j].second);
           hash_map_.erase_lockless(hash_map_dump[j].first);
@@ -133,7 +133,7 @@ class LocklessHashMap : public KVInterface<K, V> {
       for (int64 j = 0; j < bucket_count; j++) {
         if (hash_map_dump[j].first != LocklessHashMap<K, V>::EMPTY_KEY_ 
             && hash_map_dump[j].first != LocklessHashMap<K, V>::DELETED_KEY_
-            && hash_map_dump[j].first % partition_nums != partition_id) {
+            && hash_map_dump[j].first % 1000 % partition_nums != partition_id) {
           key_list->emplace_back(hash_map_dump[j].first);
           value_ptr_list->emplace_back(hash_map_dump[j].second);
         }

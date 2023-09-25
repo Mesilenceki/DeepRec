@@ -98,7 +98,7 @@ class GrpcElasticService : public AsyncServiceInterface {
         new CallData(service_, elastic_grpc_server_, cq_);
 
         // The actual processing.
-        Status s = elastic_grpc_server_->Update(request_.ps_addr());
+        Status s = elastic_grpc_server_->Update(request_.cluster_def());
         if (s.ok()) {
           reply_.set_code(Code::OK);
         } else {

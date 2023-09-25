@@ -36,8 +36,6 @@ namespace tensorflow {
 class GrpcWorker;
 class Master;
 
-typedef google::protobuf::RepeatedPtrField<std::string> RepeatedPbString;
-
 // function that creates a RendezvousMgr.
 typedef std::function<RendezvousMgrInterface*(const WorkerEnv*)>
     RendezvousMgrCreationFunction;
@@ -97,7 +95,7 @@ class ElasticGrpcServer : public ServerInterface {
   Status AddMasterEagerContextToEagerService(
       const tensorflow::uint64 context_id, tensorflow::EagerContext* context);
   
-  Status Update(const RepeatedPbString& repeated_str);
+  Status Update(const string& cluster_def_str);
   
  protected:
   virtual Status GetPort(int* port) const;
@@ -130,7 +128,7 @@ class ElasticGrpcServer : public ServerInterface {
   const ServerDef& server_def() const { return server_def_; }
   GrpcWorker* worker_impl() const { return worker_impl_.get(); }
 
-  Status UpdateServerDef(const RepeatedPbString& repeated_str, int& before_part_num, int& after_part_num);
+  Status UpdateServerDef(const string& cluster_def_str, int& before_part_num, int& after_part_num);
 
  private:
   // The overall server configuration. (it may be changed during scaling)

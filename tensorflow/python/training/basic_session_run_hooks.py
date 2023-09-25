@@ -345,15 +345,13 @@ def create(self):
 
 @tf_export(v1=["train.ElasticTrainingHook"])
 class ElasticTrainingHook(session_run_hook.SessionRunHook):
-  def __init__(self, check_scale_secs=None, check_scale_steps=2000):
+  def __init__(self, check_scale_secs=None, check_scale_steps=1000):
     import json
     self._task_index = json.loads(os.environ.get('TF_CONFIG', ""))["task"]["type"]
     self._aimaster_addr = os.environ.get("AIMASTER_ADDR", "")
     self._timer = SecondOrStepTimer(
         every_secs=check_scale_secs, every_steps=check_scale_steps)
     self.init_op_list = []
-    self.tmp_value_list = []
-    self.init_ph_list = []
     self.op_list = self._init_repartition_op()
     self.op_list.extend(self._init_var_repartition_op())
     with ops.control_dependencies(self.op_list):
@@ -413,7 +411,6 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
             partition_num = resp.ps_num
             if self._task_index == "chief":
               run_context.session.run(self.import_op, feed_dict={self.partition_num_ph: partition_num})
-              tmp_value = run_context.session.run(self.tmp_value_list)
             run_context.session.close()
             _req = elastic_training_pb2.ReadyToUpdateRequest()
             _stub.ReadyToUpdate(_req)
@@ -438,13 +435,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
               
             if self._task_index == "chief":
               try:
-                feed_dict = {}
-                for ph, v in zip(self.init_ph_list, tmp_value):
-                  feed_dict[ph] = v
-                print(feed_dict)
-                run_context.session.run(self.init_op_list, feed_dict=feed_dict)
-                # dataset_init = graph.get_operation_by_name("make_initializer")
-                # run_context.session.run([dataset_init])
+                run_context.session.run(self.init_op)
               except KeyError:
                 logging.info("No dataset in graph...")
                 pass
@@ -490,20 +481,20 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
         return True, pre_name, device_id, var_idx
       else:
         new_op = None
-        op_name = ev.device
-        if "task:2" in op_name:
-          with ops.device("/job:ps/task:0/device:CPU:0"):
-            # p = variables.VariableV1([1.0], dtype=dtypes.float32, name=ev.name[:-2])
-            self.tmp_value_list.append(ev.read_value())
-            a = array_ops.placeholder(dtypes.float32, name=ev.name[:-2]+"/placeholder")
-            self.init_ph_list.append(a)
-            with ops.name_scope("elastic_import"):
-              self.init_op_list.append(state_ops.assign(ev, a, validate_shape=False))
+        with ops.name_scope("elastic_import"):
+          if "global_step" not in ev.name:
+            with ops.device("/job:ps/task:0/device:CPU:0"):
+              if ev.dtype == dtypes.int64_ref:
+                init_value = [1]
+                p = variables.VariableV1(init_value, dtype=dtypes.int64, name=ev.name[:-2], collections=[ops.GraphKeys.LOCAL_VARIABLES])
+              else:
+                init_value = [1.0]
+                p = variables.VariableV1(init_value, dtype=dtypes.float32, name=ev.name[:-2], collections=[ops.GraphKeys.LOCAL_VARIABLES])
+            new_op = state_ops.assign(p, ev.read_value(), validate_shape=False)
         return False, new_op, 0, 0
 
     for var in variable_list:
       flag, pre_name, device_id, var_idx = process_var_name(var)
-      print(pre_name, " -- ", var_idx)
       if flag:
         import_storage_map[pre_name].append((device_id, var_idx, var))
       elif pre_name is not None:
@@ -530,14 +521,12 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
             op_list.append(gen_kv_variable_ops.re_assign_resource(var_list[idx][2], read_value, self.partition_num_ph, idx, len(var_list)))
           else:
             op_list.append(gen_kv_variable_ops.re_assign(var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
-    print(op_list)
     return op_list
 
   def _init_repartition_op(self):
     self.partition_num_ph = array_ops.placeholder(dtypes.int32, name='partition_num')
     op_list = []
     ev_list = ops.get_collection(ops.GraphKeys.EMBEDDING_VARIABLES)
-    print(ev_list)
     import_storage_map = defaultdict(lambda: defaultdict(list))
     def process_ev_name(ev):
       ev_name = ev.name.split(":")[0]

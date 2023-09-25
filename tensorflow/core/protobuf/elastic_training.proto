@@ -47,7 +47,7 @@ message ReadyToUpdateRequest {};
 message ReadyToUpdateResponse {};
 
 message UpdateServerDefRequest {
-  repeated string ps_addr = 1;
+  string cluster_def = 1;//serialized cluster_def
 }
 
 message UpdateServerDefResponse {

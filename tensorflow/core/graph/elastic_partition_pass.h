@@ -30,8 +30,11 @@ class ElasticTrainingPass : public GraphOptimizationPass {
     Status InitVarMeta(Graph* g,
                        std::unordered_map<std::string, PartitionVarMeta>& primary_ev_metas_map,
                        std::unordered_map<std::string, std::vector<std::string>>& primary_ev_to_opt_map,
-                       std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map);
+                       std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map,
+                       std::unordered_map<std::string, Node*>& unpartitioned_node_map);
     
+    Status MoveUnPartitionedVariable(Graph* g, std::unordered_map<std::string, Node*>& unpartitioned_node_map,
+                                    std::unordered_set<Node*>& nodes_to_add, int i);
     Status RewriteTrainingSubGraph(Graph* g,
                                    std::unordered_map<std::string, PartitionVarMeta>& primary_ev_metas_map,
                                    std::unordered_map<std::string, std::vector<std::string>>& primary_ev_to_opt_map,
@@ -47,7 +50,8 @@ class ElasticTrainingPass : public GraphOptimizationPass {
     Status RewriteSavingSubGraph(Graph* g,
                                 std::unordered_map<std::string, PartitionVarMeta>& primary_ev_metas_map,
                                 std::unordered_map<std::string, std::vector<std::string>>& primary_ev_to_opt_map,
-                                std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map);
+                                std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map,
+                                std::unordered_map<std::string, Node*>& unpartitioned_node_map);
     
     Status ScalingUpForWardGraph(const VarType& var_type, Graph* g, 
                                   std::unordered_map<std::string, std::vector<Node*>>& node_to_origin_map,

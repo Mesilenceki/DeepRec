@@ -143,7 +143,7 @@ Status ElasticGrpcServer::GetPort(int* port) const {
   return Status::OK();
 }
 
-Status ElasticGrpcServer::UpdateServerDef(const RepeatedPbString& repeated_str, int& before_part_num, int& after_part_num) {
+Status ElasticGrpcServer::UpdateServerDef(const string& cluster_def_str, int& before_part_num, int& after_part_num) {
   std::string tf_config;
   ReadStringFromEnvVar("TF_CONFIG", "", &tf_config);
   if (!tf_config.empty()) {
@@ -157,9 +157,24 @@ Status ElasticGrpcServer::UpdateServerDef(const RepeatedPbString& repeated_str, 
       return errors::Internal("PARSE PS FROM TF_CONFIG ERROR");
     }
 
-    after_part_num = repeated_str.size();
+    ::tensorflow::ClusterDef cluster_def;
+    bool parse_ret = cluster_def.ParseFromString(cluster_def_str);
+    if (!parse_ret) {
+      LOG(ERROR) << "cluster_def is not correct with " << cluster_def_str;
+      return errors::Internal("PARSE PS FROM cluster_def ERROR");
+    }
+
+    std::unordered_set<string> ps_addrs_vec;
+    for (auto& job_def: cluster_def.job()) {
+      if (job_def.name() == "ps") {
+        after_part_num = job_def.tasks_size();
+        for (auto& it: job_def.tasks()) {
+          ps_addrs_vec.emplace(it.second);
+        }
+      }
+    }
+
     int job_size = server_def_.cluster().job_size();
-    
     for (int j = 0; j < job_size; ++j) {
       auto* job = server_def_.mutable_cluster()->mutable_job(j);
       if (job->name() == "ps") {
@@ -167,25 +182,24 @@ Status ElasticGrpcServer::UpdateServerDef(const RepeatedPbString& repeated_str, 
         if (before_part_num == after_part_num) {
           return Status::OK();
         } else if (after_part_num > before_part_num) {
+          int idx = before_part_num;
           LOG(INFO) << "JUNQI Scaling up ===============> " << after_part_num;
           std::unordered_set<string> target_string_set;
           for (auto& value: tf_config_json["cluster"]["ps"]) {
             target_string_set.emplace(value.asString());
           }
-          for (int i = 0; i < after_part_num; ++i) {
-            if (target_string_set.find(repeated_str[i]) == target_string_set.end()) {
-              auto ps_addr = repeated_str[i];
-              job->mutable_tasks()->insert({i, ps_addr});
+          for (auto ps_addr: ps_addrs_vec) {
+            if (target_string_set.find(ps_addr) == target_string_set.end()) {
+              job->mutable_tasks()->insert({idx, ps_addr});
               tf_config_json["cluster"]["ps"].append(ps_addr);
             }
           } 
           break;
         } else {
           LOG(INFO) << "JUNQI Scaling down ===============> " << after_part_num;
-          std::unordered_set<string> target_string_set(repeated_str.begin(), repeated_str.end());
           for (int i = 0; i < before_part_num; ++i) {
             string tmp_string = tf_config_json["cluster"]["ps"][i].asString();
-            if (target_string_set.find(tmp_string) == target_string_set.end()) {
+            if (ps_addrs_vec.find(tmp_string) == ps_addrs_vec.end()) {
               Json::Value ps_addr;
               tf_config_json["cluster"]["ps"].removeIndex(i, &ps_addr);
               job->mutable_tasks()->erase(i);
@@ -202,12 +216,12 @@ Status ElasticGrpcServer::UpdateServerDef(const RepeatedPbString& repeated_str, 
   return Status::OK();
 }
 
-Status ElasticGrpcServer::Update(const RepeatedPbString& repeated_str) {
+Status ElasticGrpcServer::Update(const string& cluster_def_str) {
   for (auto* device: worker_env_.device_mgr->ListDevices()) {
     LOG(INFO) << device->resource_manager()->DebugString();
   }
   int before_part_num, after_part_num;
-  Status s = UpdateServerDef(repeated_str, before_part_num, after_part_num);
+  Status s = UpdateServerDef(cluster_def_str, before_part_num, after_part_num);
   if (!s.ok()) {
     LOG(ERROR) << s.error_message();
     return Status::OK();

@@ -186,14 +186,15 @@ class ReAssignOp : public OpKernel {
     
     // We always return the input ref.
     context->forward_ref_input_to_ref_output(0, 0);
-
+    if (new_num_part == num_partitions_) return;
     {
       mutex_lock l(*context->input_ref_mutex(0));
       const Tensor& old_lhs = context->mutable_input(0, /* lock_held */ true);
       const Tensor& rhs = context->input(1);
 
       TensorShape new_shape = old_lhs.shape();
-      int shard_unit = rhs.shape().dim_size(0) / new_num_part;;
+      int shard_unit = rhs.shape().dim_size(0) / new_num_part;
+      
       if (new_num_part > num_partitions_) {
         if (partition_id_ == (new_num_part - 1)) {
           new_shape.set_dim(0, (rhs.shape().dim_size(0) - shard_unit * (new_num_part - 1)));
@@ -203,8 +204,8 @@ class ReAssignOp : public OpKernel {
         LOG(INFO) << "scale up new shape " << new_shape.dim_size(0) << " ---- " << rhs.shape().dim_size(0);
       } else {
         shard_unit = rhs.shape().dim_size(0) / new_num_part;
-        if (partition_id_ == (new_num_part - 2)) {
-          new_shape.set_dim(0, (rhs.shape().dim_size(0) - shard_unit * (new_num_part - 2)));
+        if (partition_id_ == (new_num_part - 1)) {
+          new_shape.set_dim(0, (rhs.shape().dim_size(0) - shard_unit * (new_num_part - 1)));
         } else {
           new_shape.set_dim(0, shard_unit);
         }
