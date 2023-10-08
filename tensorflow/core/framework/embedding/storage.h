@@ -223,6 +223,9 @@ class Storage {
                                  RestoreBuffer& restore_buff) {
     return Status::OK();
   }
+
+  virtual void DestroyValuePtr(ValuePtr<V>* value_ptr) = 0;
+
  protected:  
   virtual Status RestoreSSD(int64 emb_index, int64 emb_slot_num,
                             int64 value_len,

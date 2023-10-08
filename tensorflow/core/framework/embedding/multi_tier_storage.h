@@ -198,6 +198,8 @@ class MultiTierStorage : public Storage<K, V> {
     });
   }
 
+  virtual void DestroyValuePtr(ValuePtr<V>* value_ptr) {}
+
  protected:
   Status RestoreFeatures(int64 key_num, int bucket_num, int64 partition_id,
                          int64 partition_num, int64 value_len, bool is_filter,

@@ -351,6 +351,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
     self._aimaster_addr = os.environ.get("AIMASTER_ADDR", "")
     self._timer = SecondOrStepTimer(
         every_secs=check_scale_secs, every_steps=check_scale_steps)
+    self.init_op = [control_flow_ops.no_op("elastic_subgraph_init")]
     self.init_op_list = []
     self.op_list = self._init_repartition_op()
     self.op_list.extend(self._init_var_repartition_op())
@@ -366,20 +367,14 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
     self._global_step_tensor = training_util._get_or_create_global_step_read()  # pylint: disable=protected-access
     if self._global_step_tensor is None:
       raise RuntimeError(
-          "Global step should be created to use CheckpointSaverHook.")
-    self.init_op = [control_flow_ops.no_op("elastic_subgraph_init")]
-    # self.op_list = self._init_repartition_op()
-    # self.op_list.extend(self._init_var_repartition_op())
-    # with ops.control_dependencies(self.op_list):
-    #   self.import_op = [control_flow_ops.no_op("elastic_subgraph_import")]
+          "Global step should be created to use ElasticTrainingHook.")
   
   def before_run(self, run_context):  # pylint: disable=unused-argument
     return SessionRunArgs(self._global_step_tensor)
 
   def after_run(self, run_context, run_values):
-    def _check_scale_():
+    def _check_scale():
       import grpc
-      import json
       from tensorflow.python.training import elastic_training_pb2_grpc
       from tensorflow.python.training import elastic_training_pb2
       channel = grpc.insecure_channel(self._aimaster_addr)
@@ -399,18 +394,13 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
             if self._task_index == "chief":
               graph = ops.get_default_graph()
               run_context.session.run(self.init_op)
-              run_context.session.run(self.import_op, feed_dict={self.partition_num_ph: partition_num})
-              # try:
-              #   dataset_init = graph.get_operation_by_name("make_initializer")
-              #   logging.info("running dataset_init op...")
-              #   run_context.session.run([dataset_init])
-              # except KeyError:
-              #   logging.warning("dataset_init op not found.")
+              run_context.session.run(self.import_op, 
+                                      feed_dict={self.partition_num_ph: partition_num})
           elif resp.scaling_action == elastic_training_pb2.SCALING_DOWN:
-            # part_variable_list = [x for x in variable_list if isinstance(x, variables.PartitionedVariable)]
             partition_num = resp.ps_num
             if self._task_index == "chief":
-              run_context.session.run(self.import_op, feed_dict={self.partition_num_ph: partition_num})
+              run_context.session.run(self.import_op,
+                                      feed_dict={self.partition_num_ph: partition_num})
             run_context.session.close()
             _req = elastic_training_pb2.ReadyToUpdateRequest()
             _stub.ReadyToUpdate(_req)
@@ -422,22 +412,15 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
               fields = op_device.strip('/').split('/')
               for field_ in fields:
                 field = field_.lower()
-                # skip 'device:xxx'
                 if field.find("task:") != -1:
-                    if int(field.split(":")[1]) >= partition_num:
-                        op._set_device("")
-              # if post_idx == -1:
-              #   if int(op_device[idx:].split(":")[1]) > partition_num:
-              #     op._set_device("") #/job:ps/task:1/device:CPU:0
-              # else:
-              #   if int(post_name[:post_idx].split(":")[1]) > partition_num:
-              #     op._set_device("")
+                  if int(field.split(":")[1]) >= partition_num:
+                    op._set_device("")
               
             if self._task_index == "chief":
               try:
                 run_context.session.run(self.init_op)
               except KeyError:
-                logging.info("No dataset in graph...")
+                logging.info("failed tp run init_ops in graph...")
                 pass
         else:
           logging.warning("AIMASTER UNAVAILABLE {}".format(resp.msg))
@@ -450,13 +433,13 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       global_step = run_context.session.run(self._global_step_tensor)
       if self._timer.should_trigger_for_step(global_step):
         self._timer.update_last_triggered_step(global_step)
-        _check_scale_()
+        _check_scale()
 
   def _init_var_repartition_op(self):
-    # self.partition_num_ph
     op_list = []
     ev_list = ops.get_collection(ops.GraphKeys.EMBEDDING_VARIABLES)
     variable_list = [x for x in ops.get_collection(ops.GraphKeys.GLOBAL_VARIABLES) if x not in ev_list]
+    variable_list.extend(ops.get_collection(ops.GraphKeys.LOCAL_VARIABLES))
     import_storage_map = defaultdict(list)
     def process_var_name(ev):
       ev_name = ev.name.split(":")[0]
@@ -481,92 +464,116 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
         return True, pre_name, device_id, var_idx
       else:
         new_op = None
-        with ops.name_scope("elastic_import"):
-          if "global_step" not in ev.name:
-            with ops.device("/job:ps/task:0/device:CPU:0"):
-              if ev.dtype == dtypes.int64_ref:
-                init_value = [1]
-                p = variables.VariableV1(init_value, dtype=dtypes.int64, name=ev.name[:-2], collections=[ops.GraphKeys.LOCAL_VARIABLES])
-              else:
-                init_value = [1.0]
-                p = variables.VariableV1(init_value, dtype=dtypes.float32, name=ev.name[:-2], collections=[ops.GraphKeys.LOCAL_VARIABLES])
-            new_op = state_ops.assign(p, ev.read_value(), validate_shape=False)
+        if "global_step" not in ev.name:
+          with ops.device("/job:ps/task:0/device:CPU:0"):
+            if ev.dtype == dtypes.int64_ref:
+              init_value = [1]
+              p = variables.VariableV1(init_value, dtype=dtypes.int64, name=ev.name[:-2], collections=[ops.GraphKeys.LOCAL_VARIABLES])
+            else:
+              init_value = [1.0]
+              p = variables.VariableV1(init_value, dtype=dtypes.float32, name=ev.name[:-2], collections=[ops.GraphKeys.LOCAL_VARIABLES])
+          new_op = state_ops.assign(p, ev.read_value(), validate_shape=False)
         return False, new_op, 0, 0
 
-    for var in variable_list:
-      flag, pre_name, device_id, var_idx = process_var_name(var)
-      if flag:
-        import_storage_map[pre_name].append((device_id, var_idx, var))
-      elif pre_name is not None:
-        op_list.append(pre_name)
-
     graph = ops.get_default_graph()
-    for var_name, var_list in import_storage_map.items():
-      var_list.sort(key= lambda x: x[0])
-      var_read = [var[2] for var in var_list]
-      # try:
-      #   read_value = graph.get_tensor_by_name(var_name+"/ConcatPartitions/concat:0")
-      # except:
-      with ops.name_scope("elastic_import"):
+    with ops.name_scope("elastic_import"):
+      for var in variable_list:
+        flag, pre_name, device_id, var_idx = process_var_name(var)
+        if flag:
+          import_storage_map[pre_name].append((device_id, var_idx, var))
+        elif pre_name is not None:
+          op_list.append(pre_name)
+
+      for var_name, var_list in import_storage_map.items():
+        var_list.sort(key= lambda x: x[0])
+        var_read = [var[2] for var in var_list]
+        # try:
+        #   read_value = graph.get_tensor_by_name(var_name+"/ConcatPartitions/concat:0")
+        # except:
         read_value = array_ops.concat(var_read, axis=0) #partition_axis
-      for idx, var_meta in enumerate(var_list):
-        if var_meta[0] != var_meta[1]:
-          if resource_variable_ops.is_resource_variable(var_list[idx][2]):
-            op_list.append(gen_kv_variable_ops.re_assign_resource(var_list[idx][2], read_value, self.partition_num_ph, idx, len(var_list)))
+        for idx, var_meta in enumerate(var_list):
+          if var_meta[0] != var_meta[1]:
+            if resource_variable_ops.is_resource_variable(var_list[idx][2]):
+              op_list.append(gen_kv_variable_ops.re_assign_resource(var_list[idx][2], read_value, self.partition_num_ph, idx, len(var_list)))
+            else:
+              op_list.append(gen_kv_variable_ops.re_assign(var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
           else:
-            op_list.append(gen_kv_variable_ops.re_assign(var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
-        else:
-          # read_value = array_ops.concat(var_read, axis=0) #partition_axis
-          if resource_variable_ops.is_resource_variable(var_list[idx][2]):
-            op_list.append(gen_kv_variable_ops.re_assign_resource(var_list[idx][2], read_value, self.partition_num_ph, idx, len(var_list)))
-          else:
-            op_list.append(gen_kv_variable_ops.re_assign(var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
+            # read_value = array_ops.concat(var_read, axis=0) #partition_axis
+            if resource_variable_ops.is_resource_variable(var_list[idx][2]):
+              op_list.append(gen_kv_variable_ops.re_assign_resource(var_list[idx][2], read_value, self.partition_num_ph, idx, len(var_list)))
+            else:
+              op_list.append(gen_kv_variable_ops.re_assign(var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
     return op_list
 
   def _init_repartition_op(self):
     self.partition_num_ph = array_ops.placeholder(dtypes.int32, name='partition_num')
     op_list = []
-    ev_list = ops.get_collection(ops.GraphKeys.EMBEDDING_VARIABLES)
+    tot_ev_list = ops.get_collection(ops.GraphKeys.EMBEDDING_VARIABLES)
+    var_map = {}
+    opt_to_primary_map = defaultdict(list)
     import_storage_map = defaultdict(lambda: defaultdict(list))
     def process_ev_name(ev):
       ev_name = ev.name.split(":")[0]
       idx = ev_name.find("part_")
       post_idx = ev_name[idx:].find("/")
+      opt_name = None
       if (post_idx == -1):
-        pre_name = ev_name[:idx]
+        ev_name = ev_name[:idx-1]
       else:
-          pre_name = ev_name[:idx] + ev_name[idx:][post_idx:]
-      return pre_name
+        ev_name = ev_name[:idx-1] + ev_name[idx:][post_idx:]
+        opt_name = ev_name[:idx-1]
+      return ev_name, opt_name
 
-    for ev in ev_list:
+    for ev in tot_ev_list:
       is_partitioned_ev = not isinstance(ev._save_slice_info, str)
       save_slice_info = ev._save_slice_info
       partition_num = save_slice_info.full_shape[0] if is_partitioned_ev else 1
-      pre_name = process_ev_name(ev)
-      import_storage_map[pre_name]["keys"] = [None for _ in range(partition_num)]
-      import_storage_map[pre_name]["values"]  = [None for _ in range(partition_num)]
-      import_storage_map[pre_name]["versions"] = [None for _ in range(partition_num)]
-      import_storage_map[pre_name]["freqs"] = [None for _ in range(partition_num)]
+      partition_id = save_slice_info.var_offset[0] if is_partitioned_ev else 0
+      pre_name, opt_name = process_ev_name(ev)
+      if pre_name not in var_map:
+        var_map[pre_name] = [None for _ in range(partition_num)]
+        if opt_name is not None:
+          opt_to_primary_map[opt_name].append(pre_name)
 
-    for ev in ev_list:
-      is_partitioned_ev = not isinstance(ev._save_slice_info, str)
-      partition_id = 0
-      partition_num = 1
-      save_slice_info = ev._save_slice_info
-      pre_name = process_ev_name(ev)
-      key_type = dtypes.as_dtype(ev.handle.op.get_attr("Tkeys"))
-      dtype = dtypes.as_dtype(ev.handle.op.get_attr("dtype"))
-      if save_slice_info is not None:
-        partition_id = save_slice_info.var_offset[0] if is_partitioned_ev else 0
-        partition_num = save_slice_info.full_shape[0] if is_partitioned_ev else 1
-      unneeded_ids, unneeded_values, unneeded_versions, unneeded_freqs = gen_kv_variable_ops.filter_storage(ev.handle, self.partition_num_ph, key_type, dtype, partition_id=partition_id)
-      import_storage_map[pre_name]["keys"][partition_id] = unneeded_ids
-      import_storage_map[pre_name]["values"][partition_id] = unneeded_values
-      import_storage_map[pre_name]["versions"][partition_id] = unneeded_versions
-      import_storage_map[pre_name]["freqs"][partition_id] = unneeded_freqs
+      var_map[pre_name][partition_id] = ev
 
-    for ev in ev_list:
-      pre_name = process_ev_name(ev)
+    for primary_name, opt_name_list in opt_to_primary_map.items():
+      print(primary_name, " ==== ", opt_name_list)
+      partition_num = len(var_map[primary_name])
+      tmp_op_list = [[] for _ in range(partition_num)]
+      for opt_name in opt_name_list:
+        ev_list = var_map[opt_name]
+        import_storage_map[opt_name]["keys"] = [None for _ in range(partition_num)]
+        import_storage_map[opt_name]["values"]  = [None for _ in range(partition_num)]
+        import_storage_map[opt_name]["versions"] = [None for _ in range(partition_num)]
+        import_storage_map[opt_name]["freqs"] = [None for _ in range(partition_num)]
+        for idx, ev in enumerate(ev_list):
+          key_type = dtypes.as_dtype(ev.handle.op.get_attr("Tkeys"))
+          dtype = dtypes.as_dtype(ev.handle.op.get_attr("dtype"))
+          unneeded_ids, unneeded_values, unneeded_versions, unneeded_freqs = gen_kv_variable_ops.filter_storage(ev.handle, self.partition_num_ph, key_type, dtype, partition_id=idx)
+          tmp_op_list[idx].append(unneeded_ids)
+          import_storage_map[opt_name]["keys"][idx] = unneeded_ids
+          import_storage_map[opt_name]["values"][idx] = unneeded_values
+          import_storage_map[opt_name]["versions"][idx] = unneeded_versions
+          import_storage_map[opt_name]["freqs"][idx] = unneeded_freqs
+
+      ev_list = var_map[primary_name]
+      import_storage_map[primary_name]["keys"] = [None for _ in range(partition_num)]
+      import_storage_map[primary_name]["values"]  = [None for _ in range(partition_num)]
+      import_storage_map[primary_name]["versions"] = [None for _ in range(partition_num)]
+      import_storage_map[primary_name]["freqs"] = [None for _ in range(partition_num)]
+      for idx, ev in enumerate(ev_list):
+        key_type = dtypes.as_dtype(ev.handle.op.get_attr("Tkeys"))
+        dtype = dtypes.as_dtype(ev.handle.op.get_attr("dtype"))
+        with ops.control_dependencies(tmp_op_list[idx]):
+          unneeded_ids, unneeded_values, unneeded_versions, unneeded_freqs = gen_kv_variable_ops.filter_storage(ev.handle, self.partition_num_ph, key_type, dtype, partition_id=idx)
+        import_storage_map[primary_name]["keys"][idx] = unneeded_ids
+        import_storage_map[primary_name]["values"][idx] = unneeded_values
+        import_storage_map[primary_name]["versions"][idx] = unneeded_versions
+        import_storage_map[primary_name]["freqs"][idx] = unneeded_freqs
+
+    for ev in tot_ev_list:
+      pre_name, _ = process_ev_name(ev)
       is_partitioned_ev = not isinstance(ev._save_slice_info, str)
       partition_id = 0
       save_slice_info = ev._save_slice_info

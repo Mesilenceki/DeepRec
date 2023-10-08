@@ -258,7 +258,6 @@ class SingleTierStorage : public Storage<K, V> {
     std::vector<K> key_list_tmp;
     TF_CHECK_OK(kv_->GetSnapshot(
         &key_list_tmp, &value_ptr_list));
-    LOG(INFO) << "embedding size: " << key_list_tmp.size() << " " << value_ptr_list.size();
     if (emb_config.is_primary()) {
       Shrink(key_list_tmp, value_ptr_list, shrink_args, value_len);
     }
@@ -306,6 +305,11 @@ class SingleTierStorage : public Storage<K, V> {
     LOG(FATAL) << "Unsupport Schedule in SingleTierStorage.";
   }
 
+  virtual void DestroyValuePtr(ValuePtr<V>* value_ptr) {
+    value_ptr->Destroy(alloc_);
+    delete value_ptr;
+  }
+
  protected:
   virtual void SetTotalDims(int64 total_dims) = 0;
 
@@ -313,10 +317,6 @@ class SingleTierStorage : public Storage<K, V> {
     return layout_creator_->Create(alloc_, size);
   }
 
-  virtual void DestroyValuePtr(ValuePtr<V>* value_ptr) {
-    value_ptr->Destroy(alloc_);
-    delete value_ptr;
-  }
  protected:
   virtual Status RestoreFeatures(int64 key_num, int bucket_num, int64 partition_id,
                                  int64 partition_num, int64 value_len, bool is_filter,

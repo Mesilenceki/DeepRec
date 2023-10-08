@@ -21,11 +21,24 @@ struct PartitionVarMeta {
   int m_partition_num;
 };
 
+struct ElasticHookMetaNode {
+  Node* m_import_op_main;
+  Node* m_init_op_main;
+  Node* m_tmp_value_init_op;
+  std::vector<Node*> m_init_op_vec;
+
+  ElasticHookMetaNode(int num_partition): 
+      m_import_op_main(nullptr), m_init_op_main(nullptr),
+      m_tmp_value_init_op(nullptr), m_init_op_vec(num_partition, nullptr) {};
+};
+
 class ElasticTrainingPass : public GraphOptimizationPass {
   public:
     Status Run(const GraphOptimizationPassOptions& options) override;
 
     Status RewriteSubGraph(Graph* g, bool is_test = false);
+
+    Status InitHookMetaNode(Graph* g, ElasticHookMetaNode& meta_node);
 
     Status InitVarMeta(Graph* g,
                        std::unordered_map<std::string, PartitionVarMeta>& primary_ev_metas_map,
@@ -33,12 +46,17 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                        std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map,
                        std::unordered_map<std::string, Node*>& unpartitioned_node_map);
     
-    Status MoveUnPartitionedVariable(Graph* g, std::unordered_map<std::string, Node*>& unpartitioned_node_map,
-                                    std::unordered_set<Node*>& nodes_to_add, int i);
+    Status MoveUnPartitionedVariable(Graph* g, 
+                                     std::unordered_map<std::string, Node*>& unpartitioned_node_map,
+                                     std::unordered_map<Node*, std::pair<string, string>>& nodes_to_add,
+                                     std::unordered_set<Node*>& eval_nodes_to_add,
+                                     ElasticHookMetaNode& meta_node);
+
     Status RewriteTrainingSubGraph(Graph* g,
                                    std::unordered_map<std::string, PartitionVarMeta>& primary_ev_metas_map,
                                    std::unordered_map<std::string, std::vector<std::string>>& primary_ev_to_opt_map,
                                    std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map,
+                                   ElasticHookMetaNode& meta_node,
                                    bool is_test);
     
     Status ScalingDownRedistributionGraph(VarType& var_type, Graph* g,
@@ -51,14 +69,15 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                 std::unordered_map<std::string, PartitionVarMeta>& primary_ev_metas_map,
                                 std::unordered_map<std::string, std::vector<std::string>>& primary_ev_to_opt_map,
                                 std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map,
-                                std::unordered_map<std::string, Node*>& unpartitioned_node_map);
+                                std::unordered_map<std::string, Node*>& unpartitioned_node_map,
+                                ElasticHookMetaNode& meta_node);
     
     Status ScalingUpForWardGraph(const VarType& var_type, Graph* g, 
                                   std::unordered_map<std::string, std::vector<Node*>>& node_to_origin_map,
                                   std::unordered_set<Node*>& nodes_to_delete,
                                   const std::string& primary_ev_name,
                                   const std::vector<std::string>& opt_ev_names,
-                                  std::vector<Node*>& init_op_vec, int ev_partition_num);
+                                  ElasticHookMetaNode& meta_node, int ev_partition_num);
 
     Status ScalingUpRedistributionGraph(VarType var_type, Graph* g,
                                         std::vector<Node*>& new_ev_node_vec, Node* import_op_main,
@@ -102,7 +121,7 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                     std::unordered_set<Node*>& nodes_to_delete,
                                     const std::string& primary_ev_name,
                                     const std::vector<std::string>& opt_ev_names,
-                                    std::vector<Node*>& init_op_vec, int ev_partition_num);
+                                    ElasticHookMetaNode& meta_node, int ev_partition_num);
 
     Status ScalingUpEVForWardGraph(const VarType& var_type,
                                    Graph* g, 
@@ -110,7 +129,7 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                    std::unordered_set<Node*>& nodes_to_delete,
                                    const std::string& primary_ev_name,
                                    const std::vector<std::string>& opt_ev_names,
-                                   std::vector<Node*>& init_op_vec, int ev_partition_num);
+                                   ElasticHookMetaNode& meta_node, int ev_partition_num);
     
     Status ScalingUpResVarForWardGraph(const VarType& var_type,
                                    Graph* g, 
@@ -118,7 +137,7 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                    std::unordered_set<Node*>& nodes_to_delete,
                                    const std::string& primary_ev_name,
                                    const std::vector<std::string>& opt_ev_names,
-                                   std::vector<Node*>& init_op_vec, int ev_partition_num);
+                                   ElasticHookMetaNode& meta_node, int ev_partition_num);
 
     Status ScalingUpEVRedistributionGraph(VarType var_type, Graph* g,
                                         std::vector<Node*>& new_ev_node_vec, Node* import_op_main,

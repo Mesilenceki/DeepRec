@@ -89,7 +89,6 @@ class EmbeddingVar : public ResourceBase {
   }
 
   Status Init(const Tensor& default_tensor, int64 default_value_dim) {
-    LOG(INFO) << "EMBEDDINGVAR init ---> " << name_;
     if (storage_ == nullptr) {
       return errors::InvalidArgument(
           "Invalid ht_type to construct EmbeddingVar");
@@ -604,8 +603,8 @@ class EmbeddingVar : public ResourceBase {
                          std::vector<ValuePtr<V>*>* value_ptr_list,
                          int partition_id, int partition_num) {
     return storage_->GetSnapshot(key_list, value_ptr_list, 
-                                 partition_id, partition_num,
-                                 emb_config_.is_primary());
+                          partition_id, partition_num,
+                          emb_config_.is_primary());
   }
 
   void GetSnapshot(std::vector<K>* key_list,
@@ -648,7 +647,6 @@ class EmbeddingVar : public ResourceBase {
     bool is_save_freq = emb_config_.is_save_freq();
     bool is_save_version = emb_config_.is_save_version();
 
-
     for (int64 i = 0; i < tot_keys_list.size(); ++i) {
       auto& value_ptr = tot_value_ptr_list[i];
       if((int64)value_ptr == embedding::ValuePtrStatus::IS_DELETED)
@@ -688,7 +686,14 @@ class EmbeddingVar : public ResourceBase {
         if (!save_unfiltered_features)
           return;
         //TODO(JUNQI) : currently not export filtered keys
-      }    
+      }
+      if (value_ptr != nullptr) {
+        if (emb_config_.is_primary()) {
+          storage_->DestroyValuePtr(value_ptr);
+        }
+      } else {
+        LOG(ERROR) << "value_ptr is nullptr";
+      }
     }
   }
 

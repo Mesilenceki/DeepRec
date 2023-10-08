@@ -25,40 +25,6 @@ limitations under the License.
 
 namespace tensorflow {
 
-using shape_inference::DimensionHandle;
-using shape_inference::InferenceContext;
-using shape_inference::ShapeHandle;
-
-// REGISTER_OP("ElasticPartition")
-//     .Input("data: TKey")
-//     .Input("indices: int32")
-//     .Output("p_data: num_partitions * TKey")
-//     .Output("p_indices: num_partitions * int32")
-//     .Attr("num_partitions: int")
-//     .Attr("TKey: {int64, int32}")
-//     .SetShapeFn([](InferenceContext* c) {
-//       int64 num_partitions;
-//       TF_RETURN_IF_ERROR(c->GetAttr("num_partitions", &num_partitions));
-
-//       ShapeHandle data_shape = c->input(0);
-
-//       // The partition shape is dynamic in the 0th dimension, and matches
-//       // data_shape in the remaining dimensions.
-//       ShapeHandle unknown_dim0 = c->MakeShape({c->UnknownDim()});
-
-//       const int64 rank = c->Rank(data_shape);
-//       ShapeHandle data_suffix_shape;
-//       TF_RETURN_IF_ERROR(c->Subshape(data_shape, rank, &data_suffix_shape));
-//       ShapeHandle result_shape;
-//       TF_RETURN_IF_ERROR(
-//           c->Concatenate(unknown_dim0, data_suffix_shape, &result_shape));
-
-//       for (int i = 0; i < c->num_outputs(); ++i) {
-//         c->set_output(i, result_shape);
-//       }
-
-//       return Status::OK();
-//     });
 
 template<typename TKey>
 class ElasticPartitionOp : public OpKernel {
