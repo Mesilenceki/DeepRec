@@ -157,21 +157,16 @@ Status ElasticGrpcServer::UpdateServerDef(const string& cluster_def_str, int& be
       return errors::Internal("PARSE PS FROM TF_CONFIG ERROR");
     }
 
-    ::tensorflow::ClusterDef cluster_def;
-    bool parse_ret = cluster_def.ParseFromString(cluster_def_str);
-    if (!parse_ret) {
+    Json::Value cluster_json;
+    if (!reader.parse(cluster_def_str, cluster_json)) {
       LOG(ERROR) << "cluster_def is not correct with " << cluster_def_str;
-      return errors::Internal("PARSE PS FROM cluster_def ERROR");
+      return errors::Internal("PARSE TF_CONFIG/cluster ERROR");
     }
 
     std::unordered_set<string> ps_addrs_vec;
-    for (auto& job_def: cluster_def.job()) {
-      if (job_def.name() == "ps") {
-        after_part_num = job_def.tasks_size();
-        for (auto& it: job_def.tasks()) {
-          ps_addrs_vec.emplace(it.second);
-        }
-      }
+    after_part_num = cluster_json["cluster"]["ps"].size();
+    for (auto& value: cluster_json["cluster"]["ps"]) {
+      ps_addrs_vec.emplace(value.asString());
     }
 
     int job_size = server_def_.cluster().job_size();
