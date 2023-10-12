@@ -4634,6 +4634,7 @@ py_library(
     ),
     srcs_version = "PY2AND3",
     deps = [
+        "//tensorflow/core:elastic_service_pb_py",
         ":array_ops",
         ":array_ops_gen",
         ":basic_session_run_hooks",

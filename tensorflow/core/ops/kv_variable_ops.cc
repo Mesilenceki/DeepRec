@@ -317,16 +317,12 @@ REGISTER_OP("ReAssign")
 
 REGISTER_OP("ReAssignResource")
     .Input("old: resource")
-    .Input("new: partition_nums * resource")
+    .Input("value: T")
     .Input("new_partition_nums: int32")
+    .Attr("T: type")
     .Attr("partition_id: int = 0")
     .Attr("partition_nums: int >= 1 = 1")
-    .SetShapeFn([](InferenceContext* c) {
-
-      // for ( int i = 0; i < num_lookups; ++i) {
-      //   c->set_output(0, c->input(1));
-      // }
-
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
       return Status::OK();
     });
 

@@ -139,6 +139,7 @@ load(
     "tf_lib_proto_parsing_deps",
     "tf_proto_library",
     "tf_proto_library_cc",
+    "tf_proto_library_py",
     "tf_protos_all",
     "tf_protos_all_impl",
     "tf_protos_grappler",
@@ -2479,6 +2480,15 @@ tf_proto_library_cc(
     cc_grpc_version = 1,
     cc_stubby_versions = ["2"],
     protodeps = tf_additional_all_protos(),
+    visibility = [
+        "//tensorflow:internal",
+    ],
+)
+
+tf_proto_library_py(
+    name = "elastic_service_pb",
+    srcs = ["protobuf/elastic_training.proto"],
+    use_grpc_plugin = True,
     visibility = [
         "//tensorflow:internal",
     ],

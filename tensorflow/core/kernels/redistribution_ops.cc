@@ -26,6 +26,7 @@ limitations under the License.
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/kernels/redistribution_functor.h"
+#include "tensorflow/core/framework/resource_var.h"
 
 namespace tensorflow {
 
@@ -284,99 +285,94 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_KERNELS);
 // #undef REGISTER_GPU_KERNELS
 // #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
-// template <typename Device>
-// class ReAssignResourceOp : public OpKernel {
-//  public:
-//   explicit ReAssignResourceOp(OpKernelConstruction* context) : OpKernel(context) {
-//     OP_REQUIRES_OK(context, context->GetAttr("partition_id", &partition_id_));
-//     OP_REQUIRES_OK(context, context->GetAttr("partition_nums", &num_partitions_));
-//   }
+template <typename Device, typename T>
+class ReAssignResourceOp : public OpKernel {
+ public:
+  explicit ReAssignResourceOp(OpKernelConstruction* context) : OpKernel(context) {
+    OP_REQUIRES_OK(context, context->GetAttr("T", &dtype_));
+    OP_REQUIRES_OK(context, context->GetAttr("partition_id", &partition_id_));
+    OP_REQUIRES_OK(context, context->GetAttr("partition_nums", &num_partitions_));
+  }
   
-//   void Compute(OpKernelContext* context) override {
-//     const Tensor& part_num_tensor = context->input(2);
-//     int new_num_part = part_num_tensor.flat<int32>()(0);
+  void Compute(OpKernelContext* context) override {
+    OP_REQUIRES(context, dtype_ == context->input(1).dtype(),
+                errors::InvalidArgument(
+                    "Variable and value dtypes don't match; respectively, ",
+                    DataTypeString(dtype_), " and ",
+                    DataTypeString(context->input(1).dtype())));
+    
+    const Tensor& part_num_tensor = context->input(2);
+    int new_num_part = part_num_tensor.flat<int32>()(0);
 
-//     {
-//       core::RefCountPtr<Var> variable;
-//       OP_REQUIRES_OK(context, LookupOrCreateResource<Var>(
-//                                   context, HandleFromInput(context, 0), &variable,
-//                                   [](Var** ptr) {
-//                                     // Created on host.
-//                                     *ptr = new Var(DT_VARIANT);
-//                                     return Status::OK();
-//                                   }));
+    core::RefCountPtr<Var> variable;
+    const Tensor& value = context->input(1);
 
-//       mutex_lock ml(*variable->mu());
-//       OP_REQUIRES(context, variable->tensor()->dtype() == dtype_,
-//                   errors::InvalidArgument(
-//                       "Trying to assign variable with wrong dtype. Expected ",
-//                       DataTypeString(variable->tensor()->dtype()), " got ",
-//                       DataTypeString(dtype_)));
-//       if (variable->copy_on_read_mode.load()) {
-//         PersistentTensor unused;
-//         Tensor* tmp;
-//         AllocatorAttributes attr;
-//         attr.set_gpu_compatible(true);
-//         attr.set_nic_compatible(true);
-//         OP_REQUIRES_OK(context,
-//                       context->allocate_persistent(value.dtype(), value.shape(),
-//                                                     &unused, &tmp, attr));
-//         functor::DenseUpdate<Device, T, ASSIGN> copy_functor;
-//         copy_functor(context->eigen_device<Device>(), tmp->flat<T>(),
-//                     value.flat<T>());
-//         *variable->tensor() = *tmp;
-//       } else {
-//         *variable->tensor() = value;
-//       }
-//       variable->is_initialized = true;
-//       mutex_lock ml(*variable->mu());
-//       OP_REQUIRES(context, variable->tensor()->dtype() == dtype_,
-//                   errors::InvalidArgument(
-//                       "Trying to assign variable with wrong dtype. Expected ",
-//                       DataTypeString(variable->tensor()->dtype()), " got ",
-//                       DataTypeString(dtype_)));
-//       if (variable->copy_on_read_mode.load()) {
-//         PersistentTensor unused;
-//         Tensor* tmp;
-//         AllocatorAttributes attr;
-//         attr.set_gpu_compatible(true);
-//         attr.set_nic_compatible(true);
-//         OP_REQUIRES_OK(context,
-//                       context->allocate_persistent(value.dtype(), value.shape(),
-//                                                     &unused, &tmp, attr));
-//         functor::DenseUpdate<Device, T, ASSIGN> copy_functor;
-//         copy_functor(context->eigen_device<Device>(), tmp->flat<T>(),
-//                     value.flat<T>());
-//         *variable->tensor() = *tmp;
-//       } else {
-//         *variable->tensor() = value;
-//       }
-//       variable->is_initialized = true;
-//   }
+    Tensor slice_tensor;
+    int shard_unit = value.shape().dim_size(0) / new_num_part;
+    
+    if (new_num_part > num_partitions_) {
+      if (partition_id_ == (new_num_part - 1)) {
+        slice_tensor = value.Slice(partition_id_ * shard_unit, (value.shape().dim_size(0) - shard_unit * (new_num_part - 1)));
+      } else {
+        slice_tensor = value.Slice(partition_id_ * shard_unit, (partition_id_+1) * shard_unit);
+      }
+      LOG(INFO) << "scale up new shape " << slice_tensor.dim_size(0) << " ---- " << value.shape().dim_size(0);
+    } else {
+      if (partition_id_ == (new_num_part - 1)) {
+        slice_tensor = value.Slice(partition_id_ * shard_unit, (value.shape().dim_size(0) - shard_unit * (new_num_part - 1)));
+      } else {
+        slice_tensor = value.Slice(partition_id_ * shard_unit, (partition_id_+1) * shard_unit);
+      }
+      LOG(INFO) << "scale down new shape " << slice_tensor.dim_size(0) << " ---- " << value.shape().dim_size(0);
+    }
 
-//  private:
-//   void Copy(OpKernelContext* context, Tensor* output, 
-//             const Tensor& rhs, int new_partition_nums) {
-//     if (new_partition_nums > num_partitions_) {
-//       functor::CustomScaleUp<Device, T> copy;
-//       copy(context->eigen_device<Device>(), output->flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums);
-//     } else {
-//       if (partition_id_ == new_partition_nums) return;
-//       functor::CustomScaleDown<Device, T> copy;
-//       copy(context->eigen_device<Device>(), output->flat<T>(), rhs.flat<T>(), partition_id_, new_partition_nums);
-//     }
+    OP_REQUIRES_OK(context, LookupOrCreateResource<Var>(
+                                context, HandleFromInput(context, 0), &variable,
+                                [this, &slice_tensor](Var** ptr) {
+                                  *ptr = new Var(dtype_);
+                                  *(*ptr)->tensor() = slice_tensor;
+                                  (*ptr)->is_initialized = true;
+                                  return Status::OK();
+                                }));
+    mutex_lock ml(*variable->mu());
+    OP_REQUIRES(context, variable->tensor()->dtype() == dtype_,
+                errors::InvalidArgument(
+                    "Trying to assign variable with wrong dtype. Expected ",
+                    DataTypeString(variable->tensor()->dtype()), " got ",
+                    DataTypeString(dtype_)));
+    if (variable->copy_on_read_mode.load()) {
+      PersistentTensor unused;
+      Tensor* tmp;
+      AllocatorAttributes attr;
+      attr.set_gpu_compatible(true);
+      attr.set_nic_compatible(true);
+      OP_REQUIRES_OK(context,
+                     context->allocate_persistent(value.dtype(), slice_tensor.shape(),
+                                                  &unused, &tmp, attr));
+      functor::CustomDenseUpdate<Device, T> copy_functor;
+      copy_functor(context->eigen_device<Device>(), tmp->flat<T>(),
+                   slice_tensor.flat<T>());
+      *variable->tensor() = *tmp;
+    } else {
+      *variable->tensor() = slice_tensor;
+    }
+    variable->is_initialized = true;
 
-//   }
+  }
 
-//  private:
-//   int partition_id_;
-//   int num_partitions_;
-// };
+ private:
+  DataType dtype_;
+  int partition_id_;
+  int num_partitions_;
+};
 
-// typedef Eigen::ThreadPoolDevice CPUDevice;
-// typedef Eigen::GpuDevice GPUDevice;
+#define REGISTER_KERNELS(type)                                \
+  REGISTER_KERNEL_BUILDER(Name("ReAssignResource")            \
+                              .Device(DEVICE_CPU)             \
+                              .TypeConstraint<type>("T"), \
+                          ReAssignResourceOp<Eigen::ThreadPoolDevice, type>);
 
-// REGISTER_KERNEL_BUILDER(Name("ReAssignResource").Device(DEVICE_CPU), \
-//       ReAssignResourceOp<CPUDevice>);
+TF_CALL_ALL_TYPES(REGISTER_KERNELS);
+#undef REGISTER_KERNELS
 
 } // namespace tensorflow

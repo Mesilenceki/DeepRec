@@ -47,6 +47,14 @@ struct CustomScaleUp {
                   int offset);
 };
 
+template <typename Device, typename T>
+struct CustomDenseUpdate {
+  void operator()(const Device& d, typename TTypes<T>::Flat params,
+                  typename TTypes<T>::Flat update) {
+    params.device(d) = update;
+  }
+};
+
 }  // end namespace functor
 
 // template <typename Device>
