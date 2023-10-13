@@ -282,7 +282,7 @@ REGISTER_OP("ImportStorage")
     .Input("versions: partition_nums * int64")
     .Input("freqs: partition_nums * int64")
     .Attr("partition_id: int = 0")
-    .Attr("partition_nums: int >= 1 = 1")
+    .Attr("partition_nums: int")
     .Attr("Tkeys: {int64, int32}")
     .Attr("dtype: type")
     .Doc(R"(

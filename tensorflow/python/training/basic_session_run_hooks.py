@@ -38,6 +38,7 @@ AIMASTER_ADDR = "AIMASTER_ADDR"
 
 import numpy as np
 import six
+import copy
 import types
 from collections import defaultdict
 from tensorflow.python.ops import gen_kv_variable_ops
@@ -356,11 +357,10 @@ def create(self):
 
 @tf_export(v1=["train.ElasticTrainingHook"])
 class ElasticTrainingHook(session_run_hook.SessionRunHook):
-  """Connect AIMaster periodly to check if needed to do scaling
+  """Connect AIMaster periodly to check whether to do scaling or not.
     ```python
       dynamic_embedding_server.ElasticTrainingHook()
     ```
-
   """
   def __init__(self, check_scale_secs=None, check_scale_steps=1000):
     self._task_index = json.loads(os.environ.get('TF_CONFIG', ""))["task"]["type"]
@@ -393,13 +393,15 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       self.read_sync = self.sync_variable.read_value()
       self.sync_ok = self.sync_variable.assign(True)
       self.sync_reset = self.sync_variable.assign(False)
-      
+    
+    # pylint: disable=protected-access
     graph = ops.get_default_graph()
     try:
       main_init = graph.get_operation_by_name("init")
       main_init._add_control_input(variables.variables_initializer(ops.get_collection(ops.GraphKeys.LOCAL_VARIABLES)))
-    except:
+    except Exception as e:
       logging.info("skipping add init ops")
+    # pylint: enable=protected-access
   
   def before_run(self, run_context):  # pylint: disable=unused-argument
     return session_run_hook.SessionRunArgs(self._global_step_tensor)
@@ -421,7 +423,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
     _stub = elastic_training_pb2_grpc.ElasticTrainingServiceStub(channel)
     try:
       resp = _stub.IsReadyScaling(req)
-      #reset sync variable
+      #reset sync variable first
       run_context.session.run(self.sync_reset)
       if resp.code == elastic_training_pb2.OK:
         if resp.scaling_action == elastic_training_pb2.SCALING_UP:
@@ -437,7 +439,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
             run_context.session.run(self.sync_ok)
           else:
             while False == run_context.session.run(self.read_sync):
-              logging.info("chief not ready")
+              logging.info("Chief is not ready, wait for 5 secs.")
               time.sleep(5)
         elif resp.scaling_action == elastic_training_pb2.SCALING_DOWN:
           partition_num = resp.ps_num
@@ -447,7 +449,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
             run_context.session.run(self.sync_ok)
           else:
             while False == run_context.session.run():
-              logging.info("chief not ready")
+              logging.info("Chief is not ready, wait for 5 secs.")
               time.sleep(5)
 
           run_context.session.close()
@@ -479,14 +481,6 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
     import_storage_map = defaultdict(list)
     def process_var_name(embedding_var):
       ev_name = embedding_var.name.split(":")[0]
-      device_name = embedding_var.device
-      idx = device_name.find("task:")
-      post_name = device_name[idx:]
-      post_idx = post_name.find("/")
-      if post_idx == -1:
-        device_id = int(device_name[idx+len("task:"):])
-      else:
-        device_id = int(post_name[len("task:"):post_idx])
       idx = ev_name.find("part_")
       if idx != -1:
         post_idx = ev_name[idx:].find("/")
@@ -497,6 +491,16 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
         else:
           pre_name = ev_name[:idx-1] + ev_name[idx:][post_idx:]
           var_idx = int(ev_name[idx:][part_len:post_idx])
+        device_name = embedding_var.device
+        device_id = var_idx
+        if device_name != "":
+          idx = device_name.find("task:")
+          post_name = device_name[idx:]
+          post_idx = post_name.find("/")
+          if post_idx == -1:
+            device_id = int(device_name[idx+len("task:"):])
+          else:
+            device_id = int(post_name[len("task:"):post_idx])
         return True, pre_name, device_id, var_idx
       else:
         new_op = None
@@ -584,19 +588,20 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       var_map[pre_name][partition_id] = embedding_var
 
     for primary_name, opt_name_list in primary_to_opt_map.items():
-      partition_num = len(var_map[primary_name])
+      primary_ev_list = list(filter(lambda x: x != None, var_map[primary_name]))
+      partition_num = len(primary_ev_list)
       tmp_op_list = [[] for _ in range(partition_num)]
       for opt_name in opt_name_list:
-        ev_list = var_map[opt_name]
+        opt_ev_list = list(filter(lambda x: x != None, var_map[opt_name]))
         import_storage_map[opt_name]["keys"] = [None for _ in range(partition_num)]
         import_storage_map[opt_name]["values"]  = [None for _ in range(partition_num)]
         import_storage_map[opt_name]["versions"] = [None for _ in range(partition_num)]
         import_storage_map[opt_name]["freqs"] = [None for _ in range(partition_num)]
-        for idx, embedding_var in enumerate(ev_list):
+        for idx, embedding_var in enumerate(opt_ev_list):
           key_type = dtypes.as_dtype(embedding_var.handle.op.get_attr("Tkeys"))
           dtype = dtypes.as_dtype(embedding_var.handle.op.get_attr("dtype"))
           unneeded_ids, unneeded_values, unneeded_versions, unneeded_freqs = \
-              gen_kv_variable_ops.filter_storage(embedding_var,
+              gen_kv_variable_ops.filter_storage(embedding_var.handle,
                                                  self.partition_num_ph,
                                                  key_type,
                                                  dtype,
@@ -607,20 +612,19 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
           import_storage_map[opt_name]["versions"][idx] = unneeded_versions
           import_storage_map[opt_name]["freqs"][idx] = unneeded_freqs
 
-      ev_list = var_map[primary_name]
       import_storage_map[primary_name]["keys"] = [None for _ in range(partition_num)]
       import_storage_map[primary_name]["values"]  = [None for _ in range(partition_num)]
       import_storage_map[primary_name]["versions"] = [None for _ in range(partition_num)]
       import_storage_map[primary_name]["freqs"] = [None for _ in range(partition_num)]
-      for idx, embedding_var in enumerate(ev_list):
+      for idx, embedding_var in enumerate(primary_ev_list):
         key_type = dtypes.as_dtype(embedding_var.handle.op.get_attr("Tkeys"))
         dtype = dtypes.as_dtype(embedding_var.handle.op.get_attr("dtype"))
         with ops.control_dependencies(tmp_op_list[idx]):
           unneeded_ids, unneeded_values, unneeded_versions, unneeded_freqs = \
-              gen_kv_variable_ops.filter_storage(embedding_var, 
+              gen_kv_variable_ops.filter_storage(embedding_var.handle, 
                                                  self.partition_num_ph,
                                                  key_type, dtype,
-                                                partition_id=idx)
+                                                 partition_id=idx)
         import_storage_map[primary_name]["keys"][idx] = unneeded_ids
         import_storage_map[primary_name]["values"][idx] = unneeded_values
         import_storage_map[primary_name]["versions"][idx] = unneeded_versions
@@ -635,16 +639,25 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       if save_slice_info is not None:
         partition_id = save_slice_info.var_offset[0] if is_partitioned_ev else 0
       # pylint: enable=protected-access
-      imported_keys = [import_storage_map[pre_name]["keys"][i] \
-          for i in range(len(import_storage_map[pre_name]["keys"])) if i != partition_id]
-      imported_values = [import_storage_map[pre_name]["values"][i] \
-          for i in range(len(import_storage_map[pre_name]["values"])) if i != partition_id]
-      imported_versions = [import_storage_map[pre_name]["versions"][i] \
-          for i in range(len(import_storage_map[pre_name]["versions"])) if i != partition_id]
-      imported_freqs = [import_storage_map[pre_name]["freqs"][i] \
-          for i in range(len(import_storage_map[pre_name]["freqs"])) if i != partition_id]
+      # 1st input of ImportStorageOp is itself, it will be skipped in Kernel
+      tmp_key_list = copy.deepcopy(import_storage_map[pre_name]["keys"])
+      tmp_value_list = copy.deepcopy(import_storage_map[pre_name]["values"])
+      tmp_version_list = copy.deepcopy(import_storage_map[pre_name]["versions"])
+      tmp_freq_list = copy.deepcopy(import_storage_map[pre_name]["freqs"])
+
+      imported_keys = [tmp_key_list.pop(partition_id)]
+      imported_values = [tmp_value_list.pop(partition_id)]
+      imported_versions = [tmp_version_list.pop(partition_id)]
+      imported_freqs = [tmp_freq_list.pop(partition_id)]
+
+      for i in range(len(tmp_key_list)):
+        import_keys.append(tmp_key_list[i])
+        import_values.append(tmp_value_list[i])
+        imported_versions.append(tmp_version_list[i])
+        imported_freqs.append(tmp_freq_list[i])
+
       op_list.append(gen_kv_variable_ops.import_storage( \
-          embedding_var, imported_keys, imported_values,
+          embedding_var.handle, imported_keys, imported_values,
           imported_versions, imported_freqs, partition_id=partition_id))
 
     return op_list

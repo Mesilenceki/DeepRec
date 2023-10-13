@@ -12,7 +12,8 @@ enum VarType {
   EMBEDDING_VAR = 1,
   RESOURCE_VAR = 2,
   REF_VAR = 3,
-  DENSE_LAYER_VAR = 4,
+  DENSE_RESOUCE_VAR = 4,
+  DENSE_REF_VAR = 5,
 };
 
 struct PartitionVarMeta {

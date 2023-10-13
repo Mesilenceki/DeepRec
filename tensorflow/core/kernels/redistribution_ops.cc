@@ -136,7 +136,7 @@ class ImportStorageOp : public OpKernel {
         ctx, LookupResource(ctx, HandleFromInput(ctx, 0), &embedding_var));
     core::ScopedUnref unref_me(embedding_var);
     int64 before_size = embedding_var->Size();
-    for (int i = 0; i < partition_nums_; ++i) {
+    for (int i = 1; i < partition_nums_; ++i) {
       const Tensor& import_ids_tensor = ctx->input(1+i);
       auto* import_ids = import_ids_tensor.flat<TKey>().data();
       int64 N = import_ids_tensor.NumElements();
@@ -312,7 +312,8 @@ class ReAssignResourceOp : public OpKernel {
     
     if (new_num_part > num_partitions_) {
       if (partition_id_ == (new_num_part - 1)) {
-        slice_tensor = value.Slice(partition_id_ * shard_unit, (value.shape().dim_size(0) - shard_unit * (new_num_part - 1)));
+        // (value.shape().dim_size(0) - shard_unit * (new_num_part - 1))
+        slice_tensor = value.Slice(partition_id_ * shard_unit, value.shape().dim_size(0));
       } else {
         slice_tensor = value.Slice(partition_id_ * shard_unit, (partition_id_+1) * shard_unit);
       }
