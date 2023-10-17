@@ -3521,6 +3521,7 @@ tf_cuda_library(
         "graph/smart_stage_pass.cc",
         "graph/elastic_partition_pass.h",
         "graph/elastic_partition_pass.cc",
+        "graph/elastic_partition_pass_util.h",
         "public/session.h",
         "public/session_options.h",
         "public/version.h",

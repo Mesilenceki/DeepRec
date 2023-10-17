@@ -112,7 +112,7 @@ void ClusterScopingPassImpl::AddScopeToAllTransitiveSuccessors(Node* start) {
   std::vector<Node*> starts;
   starts.push_back(start);
   auto enter = [&](Node* n) { AddOrAppendXlaInternalScope(n, unique_suffix); };
-  DFSFrom(*graph_, starts, enter, /*leave=*/nullptr,
+  (*graph_, starts, enter, /*leave=*/nullptr,
           /*stable_comparator=*/NodeComparatorName(),
           // Do not filter any edges to better capture the semantics of
           // transitive closure of successors.  We may revisit this when

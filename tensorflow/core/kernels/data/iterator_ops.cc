@@ -783,7 +783,7 @@ class OneShotIteratorOp : public AsyncOpKernel {
 
   Status TryInit(OpKernelContext* ctx, IteratorResource** iterator,
                  ContainerInfo* cinfo) {
-    TF_RETURN_IF_ERROR(cinfo->Init(ctx->resource_manager(), def()));
+    TF_RETURN_IF_ERROR(cinfo->Init(ctx->resource_manager(), def(), true));
 
     FunctionLibraryRuntime* flr;
     std::unique_ptr<FunctionLibraryDefinition> flib_def(nullptr);

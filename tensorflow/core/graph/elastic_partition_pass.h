@@ -47,11 +47,8 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                        std::unordered_map<std::string, std::vector<Node*>>& ev_to_origin_map,
                        std::unordered_map<std::string, Node*>& unpartitioned_node_map);
     
-    Status MoveUnPartitionedVariable(Graph* g, 
-                                     std::unordered_map<std::string, Node*>& unpartitioned_node_map,
-                                     std::unordered_map<Node*, std::pair<string, string>>& nodes_to_add,
-                                     std::unordered_set<Node*>& eval_nodes_to_add,
-                                     ElasticHookMetaNode& meta_node);
+    Status MoveUnPartitionedVariable(Graph* g, Node* target_node,
+                                    ElasticHookMetaNode& meta_node);
 
     Status RewriteTrainingSubGraph(Graph* g,
                                    std::unordered_map<std::string, PartitionVarMeta>& primary_ev_metas_map,
@@ -65,7 +62,6 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                           std::unordered_set<Node*>& nodes_to_delete,
                                           int ev_partition_num);
 
-    Status UpdatePartitionNums(int& partition_nums);
     Status RewriteSavingSubGraph(Graph* g,
                                 std::unordered_map<std::string, PartitionVarMeta>& primary_ev_metas_map,
                                 std::unordered_map<std::string, std::vector<std::string>>& primary_ev_to_opt_map,
@@ -78,7 +74,8 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                   std::unordered_set<Node*>& nodes_to_delete,
                                   const std::string& primary_ev_name,
                                   const std::vector<std::string>& opt_ev_names,
-                                  ElasticHookMetaNode& meta_node, int ev_partition_num);
+                                  ElasticHookMetaNode& meta_node, 
+                                  int part_var_full_shape, int ev_partition_num);
 
     Status ScalingUpRedistributionGraph(VarType var_type, Graph* g,
                                         std::vector<Node*>& new_ev_node_vec, Node* import_op_main,
@@ -104,6 +101,7 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                   std::unordered_set<Node*>& nodes_to_delete,
                                   const std::string& primary_ev_name,
                                   const std::vector<std::string>& opt_ev_names,
+                                  int part_var_full_shape,
                                   int ev_partition_num);
 
     Status ScalingDownBackWardGraph(Graph* g, VarType var_type,
@@ -115,6 +113,8 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                     int part_var_full_shape, int ev_partition_num);
 
   private:
+
+    Status UpdatePartitionNums(int& partition_nums);
 
     Status ScalingUpVarForWardGraph(const VarType& var_type,
                                     Graph* g, 
@@ -138,7 +138,8 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                    std::unordered_set<Node*>& nodes_to_delete,
                                    const std::string& primary_ev_name,
                                    const std::vector<std::string>& opt_ev_names,
-                                   ElasticHookMetaNode& meta_node, int ev_partition_num);
+                                   ElasticHookMetaNode& meta_node, 
+                                   int part_var_full_shape, int ev_partition_num);
 
     Status ScalingUpEVRedistributionGraph(VarType var_type, Graph* g,
                                         std::vector<Node*>& new_ev_node_vec, Node* import_op_main,
@@ -172,6 +173,7 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                       std::unordered_set<Node*>& nodes_to_delete,
                                       const std::string& primary_variable_name,
                                       const std::vector<std::string>& opt_ev_names,
+                                      int part_var_full_shape,
                                       int ev_partition_num);
 
     Status ScalingDownVarForWardGraph(const VarType& var_type, Graph* g, 
@@ -219,6 +221,41 @@ class ElasticTrainingPass : public GraphOptimizationPass {
                                   Node* elastic_node,
                                   int part_var_full_shape, int ev_partition_num);
 
+    Status RewritePrevSubGraph(Graph* g,
+                                int i, std::vector<Node*>& save_node_vec, 
+                                std::unordered_set<Node*>& nodes_to_delete,
+                                std::unordered_map<string, std::vector<int64>>& variable_shape,
+                                std::unordered_map<Node*, std::pair<string, string>>& nodes_to_add,
+                                std::unordered_set<Node*>& eval_nodes_to_add,
+                                std::unordered_map<std::string, std::vector<Node*>>& node_to_origin_map,
+                                std::unordered_map<std::string, PartitionVarMeta>& primary_node_metas_map);
+
+    Status DeleteOldSaverGraph(std::vector<Node*>& save_node_vec, int i,
+                              std::unordered_map<Node*, std::pair<string, string>>& nodes_to_add,
+                              std::unordered_set<Node*>& nodes_to_delete,
+                              std::unordered_map<string, std::vector<int64>>& variable_shape,
+                              std::unordered_map<std::string, Node*>& unpartitioned_node_map);
+
+    Status AddNewSaverGraph(Graph* g, bool& has_ev, Node** new_sharded_filename,
+                            std::vector<string>& tensor_names_vec,
+                            std::vector<DataType>& n_dtypes,
+                            std::unordered_map<std::string, PartitionVarMeta>& primary_node_metas_map,
+                            std::unordered_map<std::string, std::vector<Node*>>& node_to_origin_map,
+                            std::unordered_map<string, std::vector<int64>>& variable_shape,
+                            std::vector<Node*>& restore_tensor_vec,
+                            std::string& assigned_device_name,
+                            std::vector<Node*>& save_node_vec,
+                            int i);
+    
+    Status AddNewRestoreGraph(Graph* g,
+                              bool has_ev, Node* new_sharded_filename,
+                              std::vector<string>& tensor_names_vec,  
+                              std::vector<DataType>& n_dtypes,
+                              std::unordered_map<string, std::vector<int64>> variable_shape,
+                              const std::string& assigned_device_name,
+                              std::vector<Node*>& restore_tensor_vec,
+                              std::vector<Node*>& restore_node_vec,
+                              int i);
   private:
     static int cur_partition_nums_;
     bool scaling_up_{false};

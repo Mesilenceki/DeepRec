@@ -378,7 +378,6 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
     if self._global_step_tensor is None:
       raise RuntimeError(
           "Global step should be created to use ElasticTrainingHook.")
-    self.init_op_list = []
     self.init_op = [control_flow_ops.no_op(ELASTIC_SUBGRAPH_INIT)]
     self.op_list = self._init_ev_repartition_op()
     self.op_list.extend(self._init_var_repartition_op())
@@ -448,7 +447,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
                                     feed_dict={self.partition_num_ph: partition_num})
             run_context.session.run(self.sync_ok)
           else:
-            while False == run_context.session.run():
+            while False == run_context.session.run(self.read_sync):
               logging.info("Chief is not ready, wait for 5 secs.")
               time.sleep(5)
 
@@ -456,14 +455,14 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
           _req = elastic_training_pb2.ReadyToUpdateRequest()
           _stub.ReadyToUpdate(_req)
           run_context.session.create()
-          self._rewrite_op_device()
-            
+          self._rewrite_op_device(partition_num)
+          run_context.session.run(self.sync_reset)
           if self._task_index == "chief":
             try:
               run_context.session.run(self.init_op)
               run_context.session.run(self.sync_ok)
             except Exception as error:
-              logging.info("failed to run init_ops in graph...")
+              logging.info("failed to run init_ops in graph... error{}".format(error))
           else:
             while False == run_context.session.run(self.read_sync):
               logging.info("chief not ready")
@@ -534,23 +533,52 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       for var_list in import_storage_map.values():
         var_list.sort(key= lambda x: x[0])
         var_read = [var[2] for var in var_list]
+        if len(var_list) == 1:
+          embedding_var = var_list[0][2]
+          with ops.device("/job:ps/task:0/device:CPU:0"):
+            use_resource = resource_variable_ops.is_resource_variable(embedding_var)
+            if use_resource:
+              if embedding_var.dtype == dtypes.int64_ref:
+                p = variables.VariableV1(array_ops.ones(embedding_var.shape), 
+                                        dtype=dtypes.int64,
+                                        name=embedding_var.name[:-2],
+                                        collections=[ops.GraphKeys.LOCAL_VARIABLES])
+              else:
+                p = variables.VariableV1(array_ops.ones(embedding_var.shape), 
+                                        dtype=dtypes.float32,
+                                        name=embedding_var.name[:-2],
+                                        use_resource=True,
+                                        collections=[ops.GraphKeys.LOCAL_VARIABLES])
+            else:
+
+              if embedding_var.dtype == dtypes.int64_ref:
+                init_value = [1]
+                p = variables.VariableV1(shape=embedding_var.shape,
+                                        dtype=dtypes.int64,
+                                        name=embedding_var.name[:-2],
+                                        collections=[ops.GraphKeys.LOCAL_VARIABLES])
+              else:
+                init_value = [1.0]
+                p = variables.VariableV1(init_value, 
+                                        dtype=dtypes.float32,
+                                        name=embedding_var.name[:-2],
+                                        collections=[ops.GraphKeys.LOCAL_VARIABLES])
+          if use_resource:
+            new_op = p.assign(embedding_var.read_value())
+          else:
+            new_op = state_ops.assign(p, 
+                                    embedding_var.read_value(),
+                                    validate_shape=False)
+          op_list.append(new_op)
+          continue
         read_value = array_ops.concat(var_read, axis=0) #partition_axis
         for idx, var_meta in enumerate(var_list):
-          if var_meta[0] != var_meta[1]:
-            if resource_variable_ops.is_resource_variable(var_list[idx][2]):
-              op_list.append(gen_kv_variable_ops.re_assign_resource( \
-                  var_list[idx][2].handle, read_value, self.partition_num_ph, idx, len(var_list)))
-            else:
-              op_list.append(gen_kv_variable_ops.re_assign( \
-                  var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
+          if resource_variable_ops.is_resource_variable(var_list[idx][2]):
+            op_list.append(gen_kv_variable_ops.re_assign_resource( \
+                var_list[idx][2].handle, read_value, self.partition_num_ph, idx, len(var_list)))
           else:
-            # read_value = array_ops.concat(var_read, axis=0) #partition_axis
-            if resource_variable_ops.is_resource_variable(var_list[idx][2]):
-              op_list.append(gen_kv_variable_ops.re_assign_resource( \
-                  var_list[idx][2].handle, read_value, self.partition_num_ph, idx, len(var_list)))
-            else:
-              op_list.append(gen_kv_variable_ops.re_assign( \
-                  var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
+            op_list.append(gen_kv_variable_ops.re_assign( \
+                var_list[idx][2]._ref(), read_value, self.partition_num_ph, idx, len(var_list)))
     return op_list
 
   def _init_ev_repartition_op(self):
@@ -640,10 +668,10 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
         partition_id = save_slice_info.var_offset[0] if is_partitioned_ev else 0
       # pylint: enable=protected-access
       # 1st input of ImportStorageOp is itself, it will be skipped in Kernel
-      tmp_key_list = copy.deepcopy(import_storage_map[pre_name]["keys"])
-      tmp_value_list = copy.deepcopy(import_storage_map[pre_name]["values"])
-      tmp_version_list = copy.deepcopy(import_storage_map[pre_name]["versions"])
-      tmp_freq_list = copy.deepcopy(import_storage_map[pre_name]["freqs"])
+      tmp_key_list = import_storage_map[pre_name]["keys"].copy()
+      tmp_value_list = import_storage_map[pre_name]["values"].copy()
+      tmp_version_list = import_storage_map[pre_name]["versions"].copy()
+      tmp_freq_list = import_storage_map[pre_name]["freqs"].copy()
 
       imported_keys = [tmp_key_list.pop(partition_id)]
       imported_values = [tmp_value_list.pop(partition_id)]
@@ -651,8 +679,8 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       imported_freqs = [tmp_freq_list.pop(partition_id)]
 
       for i in range(len(tmp_key_list)):
-        import_keys.append(tmp_key_list[i])
-        import_values.append(tmp_value_list[i])
+        imported_keys.append(tmp_key_list[i])
+        imported_values.append(tmp_value_list[i])
         imported_versions.append(tmp_version_list[i])
         imported_freqs.append(tmp_freq_list[i])
 
@@ -662,7 +690,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
 
     return op_list
   
-  def _rewrite_op_device(self):
+  def _rewrite_op_device(self, partition_num):
     graph = ops.get_default_graph()
     op_list = graph.get_operations()
     for op in op_list: # pylint: disable=invalid-name

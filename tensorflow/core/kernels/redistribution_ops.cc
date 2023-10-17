@@ -200,6 +200,10 @@ class ReAssignOp : public OpKernel {
       TensorShape new_shape = old_lhs.shape();
       int shard_unit = rhs.shape().dim_size(0) / new_num_part;
       
+      if (num_partitions_ == 1) {
+        LOG(INFO) << "partition num is 1. Early return.";
+        return;
+      }
       if (new_num_part > num_partitions_) {
         if (partition_id_ == (new_num_part - 1)) {
           new_shape.set_dim(0, (rhs.shape().dim_size(0) - shard_unit * (new_num_part - 1)));
@@ -310,7 +314,14 @@ class ReAssignResourceOp : public OpKernel {
     Tensor slice_tensor;
     int shard_unit = value.shape().dim_size(0) / new_num_part;
     
-    if (new_num_part > num_partitions_) {
+    if (num_partitions_ == 1) {
+      LOG(INFO) << "partition num is 1. Early return.";
+      return;
+    }
+    if (new_num_part == num_partitions_) {
+      LOG(INFO) << "Early return.";
+      return;
+    } else if (new_num_part > num_partitions_) {
       if (partition_id_ == (new_num_part - 1)) {
         // (value.shape().dim_size(0) - shard_unit * (new_num_part - 1))
         slice_tensor = value.Slice(partition_id_ * shard_unit, value.shape().dim_size(0));
@@ -319,8 +330,11 @@ class ReAssignResourceOp : public OpKernel {
       }
       LOG(INFO) << "scale up new shape " << slice_tensor.dim_size(0) << " ---- " << value.shape().dim_size(0);
     } else {
-      if (partition_id_ == (new_num_part - 1)) {
-        slice_tensor = value.Slice(partition_id_ * shard_unit, (value.shape().dim_size(0) - shard_unit * (new_num_part - 1)));
+      if (partition_id_ >= new_num_part) {
+        LOG(INFO) << "No need to scale";
+	return;
+      } else if (partition_id_ == (new_num_part - 1)) {
+        slice_tensor = value.Slice(partition_id_ * shard_unit, value.shape().dim_size(0));
       } else {
         slice_tensor = value.Slice(partition_id_ * shard_unit, (partition_id_+1) * shard_unit);
       }
