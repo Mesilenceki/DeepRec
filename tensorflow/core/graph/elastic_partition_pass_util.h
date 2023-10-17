@@ -146,8 +146,25 @@ Status ScalingSaverSaverNodeUtil(Graph* g, Node* ori_save_node, int i,
     return s;
 }
 
-Status MoveUnPartitionedVariable(Graph* g, Node* target_node,
+Status MoveUnPartitionedVariable(Graph* g, Node* search_node,
                                   ElasticHookMetaNode& meta_node) {
+  Node* target_node = nullptr;                          
+  if (search_node->type_string() == "VariableV2") {
+    target_node = search_node;
+  } else {
+    Node* identity_node;
+    TF_RETURN_IF_ERROR(search_node->input_node(0, &identity_node));
+    if (identity_node->type_string() == "Identity") {
+        Node* read_variable_node;
+        TF_RETURN_IF_ERROR(identity_node->input_node(0, &read_variable_node));
+        Node* resource_node;
+        TF_RETURN_IF_ERROR(read_variable_node->input_node(0, &resource_node));
+        target_node = resource_node;
+    } else {
+        target_node = identity_node;
+    }
+  }
+
   for (auto* o_node: target_node->out_nodes()) {
     if (o_node->name().find("elastic_import") != string::npos) {
       if (o_node->type_string() == "Identity") {

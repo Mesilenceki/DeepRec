@@ -448,6 +448,7 @@ Status ElasticTrainingPass::AddNewRestoreGraph(Graph* g,
       break;
     }
   }
+  return s;
 }
 
 Status ElasticTrainingPass::AddNewSaverGraph(Graph* g, bool& has_ev, Node** new_sharded_filename,
@@ -664,7 +665,6 @@ Status ElasticTrainingPass::AddNewSaverGraph(Graph* g, bool& has_ev, Node** new_
       TF_RETURN_IF_ERROR(s);
     }
   }
-  LOG(INFO) << tensors_input.size() << " === " << n_dtypes.size();
   // tensor_names
   NodeDef save_node_def;
   TF_RETURN_IF_ERROR(
@@ -764,12 +764,16 @@ Status ElasticTrainingPass::DeleteOldSaverGraph(std::vector<Node*>& save_node_ve
             } else if (n->type_string() == "Identity") {
               Node* identity_node;
               TF_RETURN_IF_ERROR(n->input_node(0, &identity_node));
-              Node* read_variable_node;
-              TF_RETURN_IF_ERROR(identity_node->input_node(0, &read_variable_node));
-              Node* resource_node;
-              TF_RETURN_IF_ERROR(read_variable_node->input_node(0, &resource_node));
-              if (unpartitioned_node_map.find(resource_node->name()) != unpartitioned_node_map.end()) {
-                nodes_to_add.emplace(resource_node, std::pair<string, string>(tensor_n, s_and_s_s));
+              if (identity_node->type_string() == "Identity") { // ResourceVariable
+                Node* read_variable_node;
+                TF_RETURN_IF_ERROR(identity_node->input_node(0, &read_variable_node));
+                Node* resource_node;
+                TF_RETURN_IF_ERROR(read_variable_node->input_node(0, &resource_node));
+                if (unpartitioned_node_map.find(resource_node->name()) != unpartitioned_node_map.end()) {
+                  nodes_to_add.emplace(n, std::pair<string, string>(tensor_n, s_and_s_s));
+                }
+              } else { // RefVariable
+                nodes_to_add.emplace(n, std::pair<string, string>(tensor_n, s_and_s_s));
               }
             }
           }

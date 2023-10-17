@@ -363,7 +363,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
     ```
   """
   def __init__(self, check_scale_secs=None, check_scale_steps=1000):
-    self._task_index = json.loads(os.environ.get('TF_CONFIG', ""))["task"]["type"]
+    self._task_type = json.loads(os.environ.get('TF_CONFIG', ""))["task"]["type"]
     self._aimaster_addr = os.environ.get(AIMASTER_ADDR, "")
     self._timer = SecondOrStepTimer(
         every_secs=check_scale_secs, every_steps=check_scale_steps)
@@ -417,7 +417,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
   def _check_scale(self, run_context):
     channel = grpc.insecure_channel(self._aimaster_addr)
     req = elastic_training_pb2.IsReadyScalingRequest()
-    task_id = 0 if self._task_index == "chief" else 1
+    task_id = 0 if self._task_type == "chief" else 1
     req.task_index = task_id
     _stub = elastic_training_pb2_grpc.ElasticTrainingServiceStub(channel)
     try:
@@ -431,7 +431,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
           _req = elastic_training_pb2.ReadyToUpdateRequest()
           _stub.ReadyToUpdate(_req)
           run_context.session.create()
-          if self._task_index == "chief":
+          if self._task_type == "chief":
             run_context.session.run(self.init_op)
             run_context.session.run(self.import_op,
                                     feed_dict={self.partition_num_ph: partition_num})
@@ -442,7 +442,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
               time.sleep(5)
         elif resp.scaling_action == elastic_training_pb2.SCALING_DOWN:
           partition_num = resp.ps_num
-          if self._task_index == "chief":
+          if self._task_type == "chief":
             run_context.session.run(self.import_op,
                                     feed_dict={self.partition_num_ph: partition_num})
             run_context.session.run(self.sync_ok)
@@ -457,7 +457,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
           run_context.session.create()
           self._rewrite_op_device(partition_num)
           run_context.session.run(self.sync_reset)
-          if self._task_index == "chief":
+          if self._task_type == "chief":
             try:
               run_context.session.run(self.init_op)
               run_context.session.run(self.sync_ok)
@@ -700,7 +700,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
         field = field_.lower()
         if field.find("task:") != -1:
           if int(field.split(":")[1]) >= partition_num:
-            op._set_device("")
+            op._set_device("/job:ps/task:0")
         
 
 class _MultiStepStopAtStepHook(session_run_hook.SessionRunHook):
