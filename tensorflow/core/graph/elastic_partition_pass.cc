@@ -157,60 +157,6 @@ Status ElasticTrainingPass::RewriteSubGraph(Graph* g, bool is_test) {
   return Status::OK();
 }
 
-Status ElasticTrainingPass::MoveUnPartitionedVariable(Graph* g, Node* target_node,
-                                                      ElasticHookMetaNode& meta_node) {
-  for (auto* o_node: target_node->out_nodes()) {
-    if (o_node->name().find(kElasticImportScope) != string::npos) {
-      if (o_node->type_string() == "Identity") {
-        for (auto* oo_node: o_node->out_nodes()) {
-          if (oo_node->type_string() == "Assign") {
-            Node* tmp_value;
-            TF_RETURN_IF_ERROR(oo_node->input_node(0, &tmp_value));
-            meta_node.m_tmp_value_init_op->set_assigned_device_name(oo_node->assigned_device_name());
-            target_node->set_assigned_device_name(oo_node->assigned_device_name());
-            TF_RETURN_IF_ERROR(g->UpdateEdge(tmp_value, 0, o_node, 0));
-            TF_RETURN_IF_ERROR(g->UpdateEdge(target_node, 0, oo_node, 0));
-            TF_RETURN_IF_ERROR(g->UpdateEdge(o_node, 0, oo_node, 1));
-            g->AddControlEdge(oo_node, meta_node.m_tmp_value_init_op);
-            return Status::OK();
-          }
-        }
-      } else if (o_node->type_string() == "ReadVariableOp"){
-        for (auto* oo_node: o_node->out_nodes()) {
-          if (oo_node->type_string() == "Identity") {
-            for (auto* ooo_node: oo_node->out_nodes()) {
-              if (ooo_node->type_string() == "AssignVariableOp") {
-                Node* tmp_value;
-                TF_RETURN_IF_ERROR(ooo_node->input_node(0, &tmp_value));
-                o_node->set_assigned_device_name(tmp_value->assigned_device_name());
-                meta_node.m_tmp_value_init_op->set_assigned_device_name(ooo_node->assigned_device_name());
-                target_node->set_assigned_device_name(tmp_value->assigned_device_name());
-                TF_RETURN_IF_ERROR(g->UpdateEdge(tmp_value, 0, o_node, 0));
-                TF_RETURN_IF_ERROR(g->UpdateEdge(target_node, 0, ooo_node, 0));
-                TF_RETURN_IF_ERROR(g->UpdateEdge(oo_node, 0, ooo_node, 1));
-                g->AddControlEdge(ooo_node, meta_node.m_tmp_value_init_op);
-                // auto set_stage_subgraph_node_device = [tmp_value](Node* n) {
-                //   if ((n->type_string() == "ReadVariableOp") || 
-                //       (n->type_string() == "ResourceGather") ||
-                //       (IsApplyNode(VarType::RESOURCE_VAR, n))) {
-                //     n->set_assigned_device_name(tmp_value->assigned_device_name());
-                //   }
-                // };
-                for (auto* tmp_out: target_node->out_nodes()) {
-                  tmp_out->set_assigned_device_name(tmp_value->assigned_device_name());
-                }
-                // DFSFrom(*g, {target_node}, std::move(set_stage_subgraph_node_device), nullptr);
-                return Status::OK();
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-  return Status::OK();
-}
-
 Status ElasticTrainingPass::RewritePrevSubGraph(Graph* g,
                                                 int i, std::vector<Node*>& save_node_vec, 
                                                 std::unordered_set<Node*>& nodes_to_delete,
@@ -718,7 +664,7 @@ Status ElasticTrainingPass::AddNewSaverGraph(Graph* g, bool& has_ev, Node** new_
       TF_RETURN_IF_ERROR(s);
     }
   }
-
+  LOG(INFO) << tensors_input.size() << " === " << n_dtypes.size();
   // tensor_names
   NodeDef save_node_def;
   TF_RETURN_IF_ERROR(
@@ -920,16 +866,7 @@ Status ElasticTrainingPass::RewriteSavingSubGraph(
     }
 
     for (auto& it: eval_nodes_to_add) {
-      for (auto* o_node: it->out_nodes()) {
-        if ((o_node->type_string() == "Identity") &&
-            (o_node->name().find(kElasticImportScope) != string::npos)) {
-          for (auto* oo_node: o_node->out_nodes()) {
-            if (oo_node->type_string() == "Assign") {
-              g->RemoveNode(oo_node);
-            }
-          }
-        }
-      }
+      DeleteUnlessUnPartitionedVariable(g, it);
     }
   }
 

@@ -74,7 +74,7 @@ Status ScalingSaverSaverNodeUtil(Graph* g, Node* ori_save_node, int i,
                                  std::vector<Node*>& restore_tensor_vec,
                                  std::vector<Node*>& tensor_vec,
                                  std::vector<NodeDefBuilder::NodeOut>& tensors_input,
-                                 std::vector<DataType> n_dtypes) {
+                                 std::vector<DataType>& n_dtypes) {
     Status s;
     for (auto& it : primary_node_metas_map) {
         auto ev_node = node_to_origin_map[it.first][i];
@@ -144,6 +144,73 @@ Status ScalingSaverSaverNodeUtil(Graph* g, Node* ori_save_node, int i,
         LOG(INFO) << "tensor_name: " << tensor->name();
     }
     return s;
+}
+
+Status MoveUnPartitionedVariable(Graph* g, Node* target_node,
+                                  ElasticHookMetaNode& meta_node) {
+  for (auto* o_node: target_node->out_nodes()) {
+    if (o_node->name().find("elastic_import") != string::npos) {
+      if (o_node->type_string() == "Identity") {
+        for (auto* oo_node: o_node->out_nodes()) {
+          if (oo_node->type_string() == "Assign") {
+            Node* tmp_value;
+            TF_RETURN_IF_ERROR(oo_node->input_node(0, &tmp_value));
+            meta_node.m_tmp_value_init_op->set_assigned_device_name(oo_node->assigned_device_name());
+            target_node->set_assigned_device_name(oo_node->assigned_device_name());
+            TF_RETURN_IF_ERROR(g->UpdateEdge(tmp_value, 0, o_node, 0));
+            TF_RETURN_IF_ERROR(g->UpdateEdge(target_node, 0, oo_node, 0));
+            TF_RETURN_IF_ERROR(g->UpdateEdge(o_node, 0, oo_node, 1));
+            g->AddControlEdge(oo_node, meta_node.m_tmp_value_init_op);
+            return Status::OK();
+          }
+        }
+      } else if (o_node->type_string() == "ReadVariableOp"){
+        for (auto* oo_node: o_node->out_nodes()) {
+          if (oo_node->type_string() == "Identity") {
+            for (auto* ooo_node: oo_node->out_nodes()) {
+              if (ooo_node->type_string() == "AssignVariableOp") {
+                Node* tmp_value;
+                TF_RETURN_IF_ERROR(ooo_node->input_node(0, &tmp_value));
+                o_node->set_assigned_device_name(tmp_value->assigned_device_name());
+                meta_node.m_tmp_value_init_op->set_assigned_device_name(ooo_node->assigned_device_name());
+                target_node->set_assigned_device_name(tmp_value->assigned_device_name());
+                TF_RETURN_IF_ERROR(g->UpdateEdge(tmp_value, 0, o_node, 0));
+                TF_RETURN_IF_ERROR(g->UpdateEdge(target_node, 0, ooo_node, 0));
+                TF_RETURN_IF_ERROR(g->UpdateEdge(oo_node, 0, ooo_node, 1));
+                g->AddControlEdge(ooo_node, meta_node.m_tmp_value_init_op);
+                // auto set_stage_subgraph_node_device = [tmp_value](Node* n) {
+                //   if ((n->type_string() == "ReadVariableOp") || 
+                //       (n->type_string() == "ResourceGather") ||
+                //       (IsApplyNode(VarType::RESOURCE_VAR, n))) {
+                //     n->set_assigned_device_name(tmp_value->assigned_device_name());
+                //   }
+                // };
+                for (auto* tmp_out: target_node->out_nodes()) {
+                  tmp_out->set_assigned_device_name(tmp_value->assigned_device_name());
+                }
+                // DFSFrom(*g, {target_node}, std::move(set_stage_subgraph_node_device), nullptr);
+                return Status::OK();
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return Status::OK();
+}
+
+void DeleteUnlessUnPartitionedVariable(Graph* g, Node* target_node) {
+    for (auto* o_node: target_node->out_nodes()) {
+        if ((o_node->type_string() == "Identity") &&
+            (o_node->name().find("elastic_import") != string::npos)) {
+            for (auto* oo_node: o_node->out_nodes()) {
+            if (oo_node->type_string() == "Assign") {
+                g->RemoveNode(oo_node);
+            }
+            }
+        }
+    }
 }
 
 }
