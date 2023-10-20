@@ -69,6 +69,7 @@ tf_cuda_library(
         "//tensorflow/core/distributed_runtime/rpc/eager:grpc_eager_client",
         "//tensorflow/core/distributed_runtime/rpc:grpc_channel",
         "//tensorflow/core/distributed_runtime/rpc:grpc_server_lib",
+        "//tensorflow/core/distributed_runtime/rpc:elastic_service",
         "//tensorflow/core/distributed_runtime/rpc:grpc_worker_cache",
         "//tensorflow/core/distributed_runtime/rpc:grpc_worker_service",
         "//tensorflow/core/distributed_runtime/rpc:rpc_rendezvous_mgr",

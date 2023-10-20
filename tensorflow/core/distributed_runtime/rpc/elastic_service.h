@@ -24,7 +24,7 @@ namespace tensorflow {
 
 class AsyncServiceInterface;
 AsyncServiceInterface* NewGrpcElasticService(ElasticGrpcServer* elastic_grpc_server,
-    const ConfigProto& default_session_config, ::grpc::ServerBuilder* builder);
+    ::grpc::ServerBuilder* builder);
 
 } // namespace tensorflow
 

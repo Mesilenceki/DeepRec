@@ -68,6 +68,7 @@ from tensorflow.python.training.summary_io import SummaryWriterCache
 from tensorflow.python.util.tf_export import tf_export
 from tensorflow.core.protobuf import elastic_training_pb2, elastic_training_pb2_grpc
 from tensorflow.python import pywrap_tensorflow as tf_session
+from tensorflow.python.framework import device as tf_device
 
 _HOOKS = "hooks"
 _STEPS_PER_RUN_VAR = "steps_per_run"
@@ -362,11 +363,13 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       dynamic_embedding_server.ElasticTrainingHook()
     ```
   """
+  
   def __init__(self, check_scale_secs=None, check_scale_steps=1000):
     self._task_type = json.loads(os.environ.get('TF_CONFIG', ""))["task"]["type"]
     self._aimaster_addr = os.environ.get(AIMASTER_ADDR, "")
     self._timer = SecondOrStepTimer(
         every_secs=check_scale_secs, every_steps=check_scale_steps)
+    self._device = tf_device.DeviceSpec.from_string("/job:ps/task:0/device:CPU:0")
 
   def after_create_session(self, session, coord):
     session.create = types.MethodType(create, session)
@@ -384,7 +387,8 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
     with ops.control_dependencies(self.op_list):
       self.import_op = [control_flow_ops.no_op(ELASTIC_SUBGRAPH_IMPORT)]
     #reserve for synchronization between chief and worker
-    with ops.device("/job:ps/task:0/device:CPU:0"):
+    
+    with ops.device(self._device):
       self.sync_variable = variables.VariableV1(False, 
                                                 trainable=False,
                                                 dtype=dtypes.bool,
@@ -504,7 +508,7 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
       else:
         new_op = None
         if "global_step" not in embedding_var.name:
-          with ops.device("/job:ps/task:0/device:CPU:0"):
+          with ops.device(self._device):
             if embedding_var.dtype == dtypes.int64_ref:
               init_value = [1]
               p = variables.VariableV1(init_value,
@@ -529,13 +533,11 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
           import_storage_map[pre_name].append((device_id, var_idx, var))
         elif pre_name is not None:
           op_list.append(pre_name)
-
+      
       for var_list in import_storage_map.values():
-        var_list.sort(key= lambda x: x[0])
-        var_read = [var[2] for var in var_list]
         if len(var_list) == 1:
           embedding_var = var_list[0][2]
-          with ops.device("/job:ps/task:0/device:CPU:0"):
+          with ops.device(self._device):
             use_resource = resource_variable_ops.is_resource_variable(embedding_var)
             if use_resource:
               if embedding_var.dtype == dtypes.int64_ref:
@@ -571,8 +573,45 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
                                     validate_shape=False)
           op_list.append(new_op)
           continue
+        var_list.sort(key= lambda x: x[0])
+        var_read = [var[2] for var in var_list]
         read_value = array_ops.concat(var_read, axis=0) #partition_axis
         for idx, var_meta in enumerate(var_list):
+          embedding_var = var_meta[2]
+          with ops.device(self._device):
+            use_resource = resource_variable_ops.is_resource_variable(embedding_var)
+            if use_resource:
+              if embedding_var.dtype == dtypes.int64_ref:
+                p = variables.VariableV1(array_ops.ones(embedding_var.shape), 
+                                        dtype=dtypes.int64,
+                                        name=embedding_var.name[:-2],
+                                        collections=[ops.GraphKeys.LOCAL_VARIABLES])
+              else:
+                p = variables.VariableV1(array_ops.ones(embedding_var.shape), 
+                                        dtype=dtypes.float32,
+                                        name=embedding_var.name[:-2],
+                                        use_resource=True,
+                                        collections=[ops.GraphKeys.LOCAL_VARIABLES])
+            else:
+              if embedding_var.dtype == dtypes.int64_ref:
+                init_value = [1]
+                p = variables.VariableV1(shape=embedding_var.shape,
+                                        dtype=dtypes.int64,
+                                        name=embedding_var.name[:-2],
+                                        collections=[ops.GraphKeys.LOCAL_VARIABLES])
+              else:
+                init_value = [1.0]
+                p = variables.VariableV1(init_value, 
+                                        dtype=dtypes.float32,
+                                        name=embedding_var.name[:-2],
+                                        collections=[ops.GraphKeys.LOCAL_VARIABLES])
+          if use_resource:
+            new_op = p.assign(embedding_var.read_value())
+          else:
+            new_op = state_ops.assign(p, 
+                                    embedding_var.read_value(),
+                                    validate_shape=False)
+          op_list.append(new_op)
           if resource_variable_ops.is_resource_variable(var_list[idx][2]):
             op_list.append(gen_kv_variable_ops.re_assign_resource( \
                 var_list[idx][2].handle, read_value, self.partition_num_ph, idx, len(var_list)))
@@ -695,12 +734,11 @@ class ElasticTrainingHook(session_run_hook.SessionRunHook):
     op_list = graph.get_operations()
     for op in op_list: # pylint: disable=invalid-name
       op_device = op.device
-      fields = op_device.strip('/').split('/')
-      for field_ in fields:
-        field = field_.lower()
-        if field.find("task:") != -1:
-          if int(field.split(":")[1]) >= partition_num:
-            op._set_device("/job:ps/task:0")
+      device_spec = tf_device.DeviceSpec.from_string(op_device)
+      if device_spec.task is not None and device_spec.task >= partition_num:
+        device_spec.task = 0
+        op._set_device(device_spec.to_string())
+            
         
 
 class _MultiStepStopAtStepHook(session_run_hook.SessionRunHook):

@@ -208,7 +208,6 @@ Status GrpcServer::Init(const GrpcServerOptions& opts) {
                                          opts.worker_service_options)
                         .release();
   eager_service_ = new eager::GrpcEagerServiceImpl(&worker_env_, &builder);
-
   // extra service:
   if (opts.service_func != nullptr) {
     opts.service_func(&worker_env_, &builder);

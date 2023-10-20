@@ -150,7 +150,7 @@ class GrpcElasticService : public AsyncServiceInterface {
 };
 
 AsyncServiceInterface* NewGrpcElasticService(ElasticGrpcServer* elastic_grpc_server,
-    const ConfigProto& default_session_config, ::grpc::ServerBuilder* builder) {
+    ::grpc::ServerBuilder* builder) {
   return reinterpret_cast<AsyncServiceInterface*>(new GrpcElasticService(elastic_grpc_server, builder));
 }
 }

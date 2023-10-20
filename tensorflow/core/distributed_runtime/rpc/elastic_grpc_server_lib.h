@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/stats_publisher_interface.h"
 #include "tensorflow/core/distributed_runtime/master_env.h"
 #include "tensorflow/core/distributed_runtime/rpc/async_service_interface.h"
+#include "tensorflow/core/distributed_runtime/rpc/grpc_server_lib.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_channel.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_worker_service.h"
 #include "tensorflow/core/distributed_runtime/server_lib.h"
@@ -33,145 +34,28 @@ limitations under the License.
 
 namespace tensorflow {
 
-class GrpcWorker;
-class Master;
-
-// function that creates a RendezvousMgr.
-typedef std::function<RendezvousMgrInterface*(const WorkerEnv*)>
-    RendezvousMgrCreationFunction;
-
-// function that creates a CollectiveExecutorMgr.
-typedef std::function<CollectiveExecutorMgrInterface*(
-    const ConfigProto&, const WorkerEnv*, WorkerCacheInterface*)>
-    CollectiveMgrCreationFunction;
-
-// function that registers a service to the server. The service needs to
-// be registered before builder.BuildAndStart().
-typedef std::function<void(const WorkerEnv*, ::grpc::ServerBuilder*)>
-    ServiceInitFunction;
-
-// function that creates a grpc based worker implementation.
-typedef std::function<std::unique_ptr<GrpcWorker>(WorkerEnv*,
-                                                  const ConfigProto& config)>
-    WorkerCreationFunction;
-
-struct GrpcServerOptions {
-  ServiceInitFunction service_func = nullptr;
-  RendezvousMgrCreationFunction rendezvous_mgr_func = nullptr;
-  CollectiveMgrCreationFunction collective_mgr_func = nullptr;
-  WorkerCreationFunction worker_func = nullptr;
-  StatsPublisherFactory stats_factory = CreateNoOpStatsPublisher;
-  GrpcWorkerServiceOptions worker_service_options;
-};
-
-class ElasticGrpcServer : public ServerInterface {
- protected:
-  ElasticGrpcServer(const ServerDef& server_def, Env* env);
-  // Allow children classes to override this and provide custom args to the
-  // server before it is constructed. Default behavior is to do nothing.
-  virtual void MaybeMutateBuilder(::grpc::ServerBuilder* builder);
-
+class ElasticGrpcServer : public GrpcServer {
  public:
+  ElasticGrpcServer(const ServerDef& server_def, Env* env);
+  
+  virtual ~ElasticGrpcServer() override;
+
   static Status Create(const ServerDef& server_def, Env* env,
                        std::unique_ptr<ServerInterface>* out_server);
   static Status Create(const ServerDef& server_def, Env* env,
                        std::unique_ptr<ElasticGrpcServer>* out_server);
 
-  // Destruction is only supported in the factory method. Clean
-  // shutdown is not currently implemented for this server type.
-  virtual ~ElasticGrpcServer();
-
-  // Implementations of ServerInterface methods.
-  Status Start() override;
-  Status Stop() override;
-  Status Join() override;
-  const string target() const override;
-
-  WorkerEnv* worker_env() { return &worker_env_; }
-  MasterEnv* master_env() { return &master_env_; }
-
-  // Add master eager context to local eager service in order to handle enqueue
-  // requests from remote workers.
-  Status AddMasterEagerContextToEagerService(
-      const tensorflow::uint64 context_id, tensorflow::EagerContext* context);
-  
   Status Update(const string& cluster_def_str);
-  
- protected:
-  virtual Status GetPort(int* port) const;
-  Status Init(const GrpcServerOptions& opts = GrpcServerOptions());
-
-  // A subclass can override this method to support secure credentials.
-  virtual std::shared_ptr<::grpc::ServerCredentials> GetServerCredentials(
-      const ServerDef& server_def) const;
-
-  virtual ChannelCreationFunction GetChannelCreationFunction() const;
-
-  virtual std::unique_ptr<Master> CreateMaster(MasterEnv* master_env);
-
-  // Creates a WorkerCacheInterface for a session.
-  virtual Status WorkerCacheFactory(const WorkerCacheFactoryOptions& options,
-                                    WorkerCacheInterface** worker_cache);
-  
-  // Creates a WorkerCacheInterface for a session.
-  Status UpdateWorkerCacheFactory(const WorkerCacheFactoryOptions& options,
-                                    WorkerCacheInterface** worker_cache);
-
-  // Parses a WorkerCacheFactoryOptions into a GrpcChannelSpec.
-  Status ParseChannelSpec(const WorkerCacheFactoryOptions& options,
-                          GrpcChannelSpec* channel_spec);
-
-  // Returns the port to which this server is bound.
-  // This method may only be called after `this->Init()` returns successfully.
-  int bound_port() const { return bound_port_; }
-
-  const ServerDef& server_def() const { return server_def_; }
-  GrpcWorker* worker_impl() const { return worker_impl_.get(); }
 
   Status UpdateServerDef(const string& cluster_def_str, int& before_part_num, int& after_part_num);
 
- private:
-  // The overall server configuration. (it may be changed during scaling)
-  ServerDef server_def_;
+  void MaybeMutateBuilder(::grpc::ServerBuilder* builder) override;
+
+  Status Start() override;
   
-  Env* env_;
-  GrpcServerOptions opts_;
+  Status Join() override;
 
-  // The port to which this server is bound.
-  int bound_port_ = 0;
-
-  // Guards state transitions.
-  mutex mu_;
-
-  // Represents the current state of the server, which changes as follows:
-  //
-  //                 Join()            Join()
-  //                  ___               ___
-  //      Start()     \ /    Stop()     \ /
-  // NEW ---------> STARTED --------> STOPPED
-  //   \                          /
-  //    \________________________/
-  //            Stop(), Join()
-  enum State { NEW, STARTED, STOPPED };
-  State state_ GUARDED_BY(mu_);
-
-  // Implementation of a TensorFlow master, and RPC polling thread.
-  MasterEnv master_env_;
-  std::unique_ptr<Master> master_impl_;
-  AsyncServiceInterface* master_service_ = nullptr;
-  std::unique_ptr<Thread> master_thread_ GUARDED_BY(mu_);
-
-  // Implementation of a TensorFlow worker, and RPC polling thread.
-  WorkerEnv worker_env_;
-  std::unique_ptr<GrpcWorker> worker_impl_;
-  AsyncServiceInterface* worker_service_ = nullptr;
-  std::unique_ptr<Thread> worker_thread_ GUARDED_BY(mu_);
-
-  // TensorFlow Eager implementation, and RPC polling thread.
-  AsyncServiceInterface* eager_service_ = nullptr;
-  std::unique_ptr<Thread> eager_thread_ GUARDED_BY(mu_);
-  std::shared_ptr<WorkerSession> worker_session_;
-
+ private:
   // TensorFlow Eager implementation, and RPC polling thread.
   AsyncServiceInterface* elastic_service_ = nullptr;
   std::unique_ptr<Thread> update_server_thread_ GUARDED_BY(mu_);

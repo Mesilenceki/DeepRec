@@ -24,6 +24,7 @@ limitations under the License.
 #include "tensorflow/core/graph/graph_constructor.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/elastic_partition_pass_util.h"
+#include "tensorflow/core/util/device_name_utils.h"
 
 constexpr char kPart[] = "part_";
 constexpr char kEnableElasticEnv[] = "ENABLE_ELASTIC";
@@ -42,16 +43,11 @@ namespace tensorflow {
 
 int ElasticTrainingPass::cur_partition_nums_ = 0;
 
-inline string NewDeviceName(Node* node, int i) {
-  auto device_name =
-      node->assigned_device_name();  
-  std::string task_str = "task:";
-  auto idx_begin = device_name.rfind(task_str);
-  auto idx_end = device_name.find("device:", idx_begin);
-  std::string new_device_name =
-      device_name.substr(0, idx_begin + task_str.size()) +
-      std::to_string(i) + device_name.substr(idx_end - 1);
-  return new_device_name;
+inline string NewDevice(Node* node, int i) {
+  DeviceNameUtils::ParsedName full_device_name;
+  DeviceNameUtils::ParseFullName(node->assigned_device_name(), &full_device_name);
+  full_device_name.task = i;
+  return DeviceNameUtils::ParsedNameToString(full_device_name);
 }
 
 Status FindNode(Node* src, const string& target, std::function<Status(Node* target_node)> fn) {
@@ -1059,7 +1055,7 @@ Status ElasticTrainingPass::ScalingUpResVarForWardGraph(const VarType& var_type,
     } else {
       Node* var_node = var_vec[0];
       Node* cur_init_op = meta_node.m_init_op_vec[i];
-      string new_device_name = NewDeviceName(var_node, i);
+      string new_device_name = NewDevice(var_node, i);
       std::string op_name =
           primary_variable_name + "/" + kPart + std::to_string(i);
       Node* new_var_node = CopyNode(g, var_node, new_device_name, i, op_name);
@@ -1309,7 +1305,7 @@ Status ElasticTrainingPass::ScalingUpVarForWardGraph(const VarType& var_type,
 
   for (int i = ev_partition_num; i < cur_partition_nums_; ++i) {
     Node* cur_init_op = meta_node.m_init_op_vec[i];
-    string new_device_name = NewDeviceName(var_node, i);
+    string new_device_name = NewDevice(var_node, i);
     std::string op_name =
         primary_variable_name + "/" + kPart + std::to_string(i);
     Node* new_var_node = CopyNode(g, var_node, new_device_name, i, op_name);
@@ -1443,13 +1439,14 @@ Status ElasticTrainingPass::ScalingUpEVForWardGraph(const VarType& var_type,
   for (int i = ev_partition_num; i < cur_partition_nums_; ++i) {
     Node* cur_init_op = meta_node.m_init_op_vec[i];
     Node* ori_ev_node = var_vec[0];
-    string new_device_name = NewDeviceName(ori_ev_node, i);
+    string new_device_name = NewDevice(ori_ev_node, i);
     std::string op_name =
         primary_variable_name + "/" + kPart + std::to_string(i);
 
     Node* new_ev_node = CopyNode(g, ori_ev_node, new_device_name, i, op_name);
     new_ev_node->ClearAttr("shared_name");
     new_ev_node->AddAttr("shared_name", op_name);
+    new_ev_node->AddAttr("_class", {"loc:@"+op_name});
     var_vec[i] = new_ev_node;
 
     bool is_init = false;
@@ -1467,6 +1464,7 @@ Status ElasticTrainingPass::ScalingUpEVForWardGraph(const VarType& var_type,
               is_init = true;
               primary_init_node =
                   CopyNode(g, target_node, new_device_name, i);
+              primary_init_node->AddAttr("_class", {"loc:@"+new_ev_node->name()});
               g->AddEdge(new_ev_node, 0, primary_init_node, 0);
               g->AddEdge(new_ev_node, 0, primary_init_node, 1);
               // init_value
@@ -1474,6 +1472,7 @@ Status ElasticTrainingPass::ScalingUpEVForWardGraph(const VarType& var_type,
               TF_RETURN_IF_ERROR(target_node->input_edge(2, &init_value_edge));
               auto* init_value_node = CopyNode(
                   g, init_value_edge->src(), new_device_name, i);
+              init_value_node->AddAttr("_class", {"loc:@"+new_ev_node->name()});
               g->AddEdge(init_value_node, init_value_edge->src_output(),
                           primary_init_node, 2);
 
@@ -1482,6 +1481,7 @@ Status ElasticTrainingPass::ScalingUpEVForWardGraph(const VarType& var_type,
               TF_RETURN_IF_ERROR(target_node->input_edge(3, &empty_key_edge));
               auto* empty_key_node = CopyNode(
                   g, empty_key_edge->src(), new_device_name, i);
+              empty_key_node->AddAttr("_class", {"loc:@"+new_ev_node->name()});
               g->AddEdge(empty_key_node, empty_key_edge->src_output(),
                           primary_init_node, 3);
             }
@@ -1494,6 +1494,7 @@ Status ElasticTrainingPass::ScalingUpEVForWardGraph(const VarType& var_type,
     TF_RETURN_IF_ERROR(FindNode(ori_ev_node, "KvResourceGather", 
       [this, &g, &new_ev_node, new_device_name, i](Node* target_node) {
         Node* gather_op = CopyNode(g, target_node, new_device_name, i);
+        gather_op->AddAttr("_class", {"loc:@"+new_ev_node->name()});
         g->AddEdge(new_ev_node, 0, gather_op, 0);
         const Edge* gather_id_edge = nullptr;
         TF_RETURN_IF_ERROR(target_node->input_edge(1, &gather_id_edge));
@@ -1506,6 +1507,7 @@ Status ElasticTrainingPass::ScalingUpEVForWardGraph(const VarType& var_type,
         for (auto* o_edge : target_node->out_edges()) {
           if (o_edge->dst()->type_string() == kIdentityOp) {
             Node* identity_op = CopyNode(g, o_edge->dst(), new_device_name, i);
+            identity_op->AddAttr("_class", {"loc:@"+gather_op->name()});
             g->AddEdge(gather_op, 0, identity_op, 0);
           }
         }
@@ -1525,6 +1527,7 @@ Status ElasticTrainingPass::ScalingUpEVForWardGraph(const VarType& var_type,
           CopyNode(g, opt_var_node, new_device_name, i, op_name);
       new_opt_ev_node->ClearAttr("shared_name");
       new_opt_ev_node->AddAttr("shared_name", op_name);
+      new_opt_ev_node->AddAttr("_class", {"loc:@"+new_opt_ev_node->name()});
       node_to_origin_map[opt_ev_name][i] = new_opt_ev_node;
 
       is_init = false;
@@ -1535,6 +1538,7 @@ Status ElasticTrainingPass::ScalingUpEVForWardGraph(const VarType& var_type,
             is_init = true;
             Node* init_node =
                   CopyNode(g, target_node, new_device_name, i);
+            init_node->AddAttr("_class", {"loc:@"+new_opt_ev_node->name()});
             g->AddEdge(new_opt_ev_node, 0, init_node, 0);
             g->AddEdge(new_ev_node, 0, init_node, 1);
             g->AddControlEdge(primary_init_node, init_node);
@@ -1544,6 +1548,7 @@ Status ElasticTrainingPass::ScalingUpEVForWardGraph(const VarType& var_type,
             TF_RETURN_IF_ERROR(target_node->input_edge(2, &init_value_edge));
             auto* init_value_node =
                 CopyNode(g, init_value_edge->src(), new_device_name, i);
+            init_value_node->AddAttr("_class", {"loc:@"+new_opt_ev_node->name()});
             g->AddEdge(init_value_node, init_value_edge->src_output(),
                         init_node, 2);
 
@@ -1552,7 +1557,7 @@ Status ElasticTrainingPass::ScalingUpEVForWardGraph(const VarType& var_type,
             TF_RETURN_IF_ERROR(target_node->input_edge(3, &empty_key_edge));
             Node* empty_key_node =
                 CopyNode(g, empty_key_edge->src(), new_device_name, i);
-
+            empty_key_node->AddAttr("_class", {"loc:@"+new_opt_ev_node->name()});
             g->AddEdge(empty_key_node, empty_key_edge->src_output(),
                         init_node, 3);
           }
@@ -3263,6 +3268,20 @@ Status ElasticTrainingPass::InitVarMeta(
     bool partitioned = false;
     if (node->IsKvVarHandle()) {
       var_type = VarType::EMBEDDING_VAR;
+      TF_RETURN_IF_ERROR(FindNode(node, kEvExportOp,
+          [this, &device_idx](Node* target_node) {
+            TF_RETURN_IF_ERROR(
+              GetNodeAttr(target_node->attrs(), "partition_id", &device_idx));
+            return Status::OK();
+          }));
+      TF_RETURN_IF_ERROR(FindNode(node, kEvImportOp,
+          [this, &partitioned](Node* target_node) {
+            int partition_num;
+            TF_RETURN_IF_ERROR(
+              GetNodeAttr(target_node->attrs(), "partition_nums", &partition_num));
+            partitioned = partition_num > 1;
+            return Status::OK();
+          }));
     } else if (node->IsVariable()) {
       if (IsRefType(node->output_type(0))) {
         var_type = VarType::DENSE_REF_VAR;
@@ -3313,7 +3332,6 @@ Status ElasticTrainingPass::InitVarMeta(
       std::string post_str = node_name.substr(part_idx + strlen(kPart));
       auto post_idx = post_str.find("/");
       if (post_idx == string::npos) {
-        if (var_type == VarType::EMBEDDING_VAR) device_idx = std::stoi(post_str);
         if (primary_node_metas_map.find(pre_str) ==
             primary_node_metas_map.end()) {
           PartitionVarMeta var_meta;
@@ -3338,7 +3356,6 @@ Status ElasticTrainingPass::InitVarMeta(
           }
         }
       } else {
-        if (var_type == VarType::EMBEDDING_VAR) device_idx = std::stoi(post_str.substr(0, post_idx));
         string opt_name = pre_str + post_str.substr(post_idx);
         if (primary_node_metas_map.find(opt_name) ==
             primary_node_metas_map.end()) {

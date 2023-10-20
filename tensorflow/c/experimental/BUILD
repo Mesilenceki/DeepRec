@@ -32,6 +32,7 @@ tf_cuda_library(
         "//tensorflow/core/distributed_runtime:base_rendezvous_mgr",
         "//tensorflow/core/distributed_runtime:worker_env",
         "//tensorflow/core/distributed_runtime/rpc:grpc_server_lib",
+        "//tensorflow/core/distributed_runtime/rpc:elastic_service",
     ],
 )
 
@@ -69,6 +70,7 @@ tf_cuda_library(
         "//tensorflow/core/distributed_runtime:server_lib",
         "//tensorflow/core/distributed_runtime:worker_env",
         "//tensorflow/core/distributed_runtime/rpc:grpc_server_lib",
+        "//tensorflow/core/distributed_runtime/rpc:elastic_service",
     ],
 )
 

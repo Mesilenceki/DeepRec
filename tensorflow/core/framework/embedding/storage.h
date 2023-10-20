@@ -58,7 +58,7 @@ class BundleReader;
 template<typename Device>
 struct EmbeddingVarContext;
 namespace {
-  const int kSavedPartitionNum = 1000;
+  // const int kSavedPartitionNum = 1000;
 }
 namespace embedding {
 

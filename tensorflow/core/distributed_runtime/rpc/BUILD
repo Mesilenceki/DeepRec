@@ -280,11 +280,13 @@ cc_library(
 
 cc_library(
     name = "elastic_service",
-    srcs = ["elastic_service.cc"],
+    srcs = ["elastic_service.cc",
+            "elastic_grpc_server_lib.cc"],
     hdrs = ["elastic_service.h",
             "elastic_grpc_server_lib.h"],
     deps = [
         ":async_service_interface",
+        ":grpc_server_lib",
         ":grpc_channel",
         ":grpc_master_service",
         ":grpc_worker_cache",
@@ -317,14 +319,11 @@ cc_library(
 
 cc_library(
     name = "grpc_server_lib",
-    srcs = ["grpc_server_lib.cc",
-            "elastic_grpc_server_lib.cc"],
-    hdrs = ["grpc_server_lib.h",
-            "elastic_grpc_server_lib.h"],
+    srcs = ["grpc_server_lib.cc"],
+    hdrs = ["grpc_server_lib.h"],
     linkstatic = 1,  # Seems to be needed since alwayslink is broken in bazel
     deps = [
         "//tensorflow/core:elastic_service_proto_cc",
-        "elastic_service",
         ":async_service_interface",
         ":grpc_channel",
         ":grpc_master_service",
