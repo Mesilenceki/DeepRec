@@ -42,13 +42,17 @@ public:
   CPUChunk(size_t chunk_size, size_t slot_size)
      : Chunk<CPUChunk>(chunk_size, slot_size) {} 
 
-  ~CPUChunk() {
-    port::AlignedFree(start_);
-  }
+  ~CPUChunk() {}
  
   void GetMemBlock() override {
     start_ = (char *)port::AlignedMalloc(chunk_size_, kPageSize);
   }
+
+  void ReleaseMemBlock() override {
+    LOG(INFO) << "releasing ReleaseMemBlock";
+    port::AlignedFree(start_);
+  }
+
 };
 
 template<>
@@ -174,7 +178,7 @@ class EVAllocatorFactory : public AllocatorFactory {
     }
 
     void Free(void* ptr, size_t num_bytes) override {
-      ev_allocator_->DeallocateRaw(ptr);
+      ev_allocator_->DeallocateRaw(std::move(ptr));
     }
 
    private:
